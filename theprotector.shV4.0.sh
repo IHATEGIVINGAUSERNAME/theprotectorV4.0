@@ -2,6 +2,7 @@
 
 # It is free and took me about a year so use it love it or leave it
 # Production-hardened with eBPF, YARA, honeypots, and stealth detection
+# there is known rish in the file - (earl issues potentially - considering the user and risk)
 
 set -euo pipefail
 

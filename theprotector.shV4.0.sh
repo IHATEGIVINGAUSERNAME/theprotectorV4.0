@@ -75,34 +75,34 @@ HAS_BCC=false
 HAS_NETCAT=false
 NETCAT_BIN="nc"
 
-
+# Overridable environment variables
 set +u
 [[ -n $DASHBOARD_PORT ]] && API_PORT="$DASHBOARD_PORT" && API_PORT_DEFAULT=false
 set -u
 
-
+# Function to assert if a command exists
 cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
-
+# Cleanup function for proper resource management
 cleanup() {
     declare exit_code=$?
 
-   
+    # Stop honeypots
     stop_honeypots
 
-
+    # Stop eBPF monitoring
     stop_ebpf_monitoring
 
-    
+    # Clean up locks
     rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
 
     exit $exit_code
 }
 trap cleanup EXIT INT TERM
 
-
+# Enhanced lock management with stale lock detection
 acquire_lock() {
     # Check for stale locks
     if [[ -f "$LOCK_FILE" ]]; then
@@ -111,15 +111,17 @@ acquire_lock() {
             lock_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
         fi
 
-    
+        # If PID exists and process is running, exit
         if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
             echo "Another instance is running (PID: $lock_pid). Exiting."
             exit 1
         else
+            # Clean up stale lock
             rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
         fi
     fi
 
+    # Use flock if available, otherwise manual locking
     if cmd flock; then
         exec 200>"$LOCK_FILE"
         if ! flock -n 200; then
@@ -134,26 +136,29 @@ acquire_lock() {
     echo $$ > "$PID_FILE"
 }
 
-
+# Enhanced dependency checking
 check_dependencies() {
     # Check for jq
     if cmd jq; then
         HAS_JQ=true
     fi
 
-    
+    # Check for inotify tools
     if cmd inotifywait; then
         HAS_INOTIFY=true
     fi
 
+    # Check for YARA
     if cmd yara; then
         HAS_YARA=true
     fi
 
+    # Check for eBPF/BCC tools - fixing for correct path
     if cmd bpftrace || [[ -d /usr/share/bcc/tools ]] || cmd execsnoop-bpfcc; then
     HAS_BCC=true
     fi
 
+    # Check for netcat
     if cmd nc; then
         HAS_NETCAT=true
         [[ "$VERBOSE" == true ]] && log_info "Detected 'nc' executable"
@@ -175,6 +180,7 @@ check_dependencies() {
     fi
 }
 
+# Detect container/VM environment
 detect_environment() {
     # Container detection
     if [[ -f /.dockerenv ]] || [[ -f /run/.containerenv ]] || grep -q "docker\|lxc\|containerd" /proc/1/cgroup 2>/dev/null; then
@@ -205,6 +211,7 @@ detect_environment() {
     true # return true in case os is not recognised to prevent triggering set -e
 }
 
+# Validate script integrity with crypto verification
 validate_script_integrity() {
     declare script_hash_file="$LOG_DIR/.script_hash"
     declare current_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1)
@@ -262,7 +269,7 @@ json_add_alert() {
     fi
 }
 
-# Initialize YARA rules for  malware detection
+# Initialize YARA rules for advanced malware detection
 init_yara_rules() {
     if [[ "$HAS_YARA" != true ]]; then
         return
@@ -504,7 +511,7 @@ stop_ebpf_monitoring() {
     rm -f "$SCRIPTS_DIR/ghost_sentinel_execsnoop.py"
 }
 
-
+# Honeypot implementation for detecting scanning/attacks
 start_honeypots() {
     if ! cmd python3; then
         log_info "python3 not available - honeypots disabled"
@@ -574,7 +581,7 @@ detect_anti_evasion() {
         log_alert $HIGH "LD_PRELOAD environment variable detected: $LD_PRELOAD"
     fi
 
-    
+    # Check for processes with LD_PRELOAD in environment
     for pid in $(pgrep -f ".*" 2>/dev/null | head -20); do
         if [[ -r "/proc/$pid/environ" ]]; then
             declare environ_content=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null || echo "")
@@ -586,12 +593,12 @@ detect_anti_evasion() {
         fi
     done
 
-   
+    # Detect /proc inconsistencies (hidden processes)
     declare proc_dirs=$(find /proc -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | wc -l)
     declare ps_count=$(ps aux --no-headers 2>/dev/null | wc -l)
     declare ps_ef_count=$(ps -ef --no-headers 2>/dev/null | wc -l)
 
-    
+    # Check for significant discrepancies
     declare diff1=$((proc_dirs - ps_count))
     declare diff2=$((proc_dirs - ps_ef_count))
 
@@ -599,7 +606,7 @@ detect_anti_evasion() {
         log_alert $HIGH "Significant /proc inconsistency detected (proc_dirs: $proc_dirs, ps: $ps_count, ps_ef: $ps_ef_count)"
     fi
 
-  
+    # Detect modified system calls (if root)
     if [[ $EUID -eq 0 ]] && [[ -r /proc/kallsyms ]]; then
         declare suspicious_symbols=$(grep -E "(hijack|detour)" /proc/kallsyms 2>/dev/null | grep -vE '(setup_detour_execution$|arch_uretprobe_hijack_return_addr)' || echo "")
         if [[ -n "$suspicious_symbols" ]]; then
@@ -607,6 +614,7 @@ detect_anti_evasion() {
         fi
     fi
 
+    # Check for common rootkit hiding techniques
     declare hiding_techniques=(
         "/usr/bin/..."
         "/usr/sbin/..."
@@ -623,7 +631,7 @@ detect_anti_evasion() {
     done
 }
 
-
+# Enhanced network monitoring with anti-evasion
 monitor_network_advanced() {
     if [[ "$MONITOR_NETWORK" != true ]]; then return; fi
 
@@ -645,7 +653,7 @@ monitor_network_advanced() {
         log_alert $HIGH "Network tool output inconsistency detected (ss: $ss_ports, netstat: $netstat_ports, lsof: $lsof_ports)"
     fi
 
-   
+    # Check for suspicious RAW sockets
     if [[ -r /proc/net/raw ]]; then
         local raw_sockets="$(grep -v "sl" /proc/net/raw 2>/dev/null | wc -l)"
         if [[ $raw_sockets -gt 3 ]]; then
@@ -653,19 +661,20 @@ monitor_network_advanced() {
         fi
     fi
 
-    
+    # Monitor for covert channels
     local icmp_traffic="$(grep "ICMP" /proc/net/snmp 2>/dev/null | tail -1 | awk '{print $3}' || echo 0)"
     if [[ $icmp_traffic -gt 1000 ]]; then
         log_alert $MEDIUM "High ICMP traffic detected: $icmp_traffic packets"
     fi
 }
 
-
+# YARA-enhanced file monitoring
 monitor_files_with_yara() {
     if [[ "$MONITOR_FILES" != true ]]; then return; fi
 
     log_info "File monitoring with YARA malware detection..."
 
+    # Scan suspicious locations with YARA
     declare scan_locations=("/tmp" "/var/tmp" "/dev/shm")
 
     for location in "${scan_locations[@]}"; do
@@ -677,6 +686,7 @@ monitor_files_with_yara() {
                     continue
                 fi
 
+                # Perform YARA scan if available
                 if [[ "$HAS_YARA" == true ]]; then
                     declare yara_result=""
                     yara_result+=$(find "$YARA_RULES_DIR" -name '*.yar' -print0 | xargs -0 -I {} yara -s {} -r "$file" 2>/dev/null || echo "")
@@ -687,6 +697,7 @@ monitor_files_with_yara() {
                     fi
                 fi
 
+                # Fallback pattern matching
                 if [[ -r "$file" ]]; then
                     declare suspicious_content=$(grep -l -E "(eval.*base64|exec.*\\\$|/dev/tcp|socket\.socket.*connect)" "$file" 2>/dev/null || echo "")
                     if [[ -n "$suspicious_content" ]]; then
@@ -699,18 +710,18 @@ monitor_files_with_yara() {
     done
 }
 
-
+# Enhanced quarantine with YARA analysis and forensics
 quarantine_file_forensic() {
     declare file="$1"
     declare timestamp=$(date +%s)
     declare quarantine_name="$(basename "$file")_$timestamp"
 
     if [[ -f "$file" ]] && [[ -w "$(dirname "$file")" ]]; then
-       
+        # Create forensic directory
         declare forensic_dir="$QUARANTINE_DIR/forensics"
         mkdir -p "$forensic_dir"
 
-        # Preserve all metadata (it feels like a bad idea)
+        # Preserve all metadata
         stat "$file" > "$forensic_dir/${quarantine_name}.stat" 2>/dev/null || true
         ls -la "$file" > "$forensic_dir/${quarantine_name}.ls" 2>/dev/null || true
         file "$file" > "$forensic_dir/${quarantine_name}.file" 2>/dev/null || true
@@ -723,7 +734,7 @@ quarantine_file_forensic() {
             yara -s -r "$YARA_RULES_DIR" "$file" > "$forensic_dir/${quarantine_name}.yara" 2>/dev/null || true
         fi
 
-
+        # String analysis
         if cmd strings; then
             strings "$file" | head -100 > "$forensic_dir/${quarantine_name}.strings" 2>/dev/null || true
         fi
@@ -732,11 +743,11 @@ quarantine_file_forensic() {
           return
         fi
 
-   
+        # Move to quarantine
         if mv "$file" "$QUARANTINE_DIR/$quarantine_name" 2>/dev/null; then
             log_info "File quarantined with forensics: $file -> $QUARANTINE_DIR/$quarantine_name"
 
-           
+            # Create safe placeholder
             touch "$file" 2>/dev/null || true
             chmod 000 "$file" 2>/dev/null || true
         else
@@ -745,7 +756,7 @@ quarantine_file_forensic() {
     fi
 }
 
-
+# Initialize enhanced directory structure
 init_sentinel() {
     # Create directories FIRST with secure permissions
     for dir in "$LOG_DIR" "$BASELINE_DIR" "$ALERTS_DIR" "$QUARANTINE_DIR" "$BACKUP_DIR" "$THREAT_INTEL_DIR" "$YARA_RULES_DIR" "$SCRIPTS_DIR"; do
@@ -759,21 +770,21 @@ init_sentinel() {
 
             declare today=$(date +%Y%m%d)
             declare alert_file="$ALERTS_DIR/$today.log"
-            echo "=== Ghost Sentinel v2.3 - $(date '+%Y-%m-%d %H:%M:%S') ===" > "$alert_file"
+            echo "=== Ghost Sentinel v4.0 - $(date '+%Y-%m-%d %H:%M:%S') ===" > "$alert_file"
 
-
+    # Load configuration BEFORE doing anything else
     load_config_safe
 
-    
+    # Check dependencies
     check_dependencies
 
-  
+    # Initialize components
     init_json_output
     init_yara_rules
 
-    log_info "Initializing Ghost Sentinel v2.3..."
+    log_info "Initializing Ghost Sentinel v4.0..."
 
- 
+    # Detect environment
     detect_environment
     if [[ "$IS_CONTAINER" == true ]]; then
         log_info "Container environment detected - adjusting monitoring"
@@ -782,10 +793,10 @@ init_sentinel() {
         log_info "Virtual machine environment detected"
     fi
 
-
+    # Update threat intelligence
     update_threat_intelligence
 
-  
+    # Create/update baseline
     if [[ ! -f "$BASELINE_DIR/.initialized" ]] || [[ "${FORCE_BASELINE:-false}" == true ]]; then
         log_info "Creating security baseline..."
         create_baseline
@@ -793,7 +804,7 @@ init_sentinel() {
     fi
 }
 
-
+# Enhanced JSON initialization
 init_json_output() {
     cat > "$JSON_OUTPUT_FILE" << 'EOF'
 {
@@ -866,13 +877,13 @@ load_config_safe() {
     PERFORMANCE_MODE=${PERFORMANCE_MODE:-false}
     ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-true}
 
-   
+    # Secure whitelists with exact matching
     WHITELIST_PROCESSES=${WHITELIST_PROCESSES:-("firefox" "chrome" "nmap" "masscan" "nuclei" "gobuster" "ffuf" "subfinder" "httpx" "amass" "burpsuite" "wireshark" "metasploit" "sqlmap" "nikto" "dirb" "wpscan" "john" "docker" "containerd" "systemd" "kthreadd" "bash" "zsh" "ssh" "python3" "yara")}
     WHITELIST_CONNECTIONS=${WHITELIST_CONNECTIONS:-("127.0.0.1" "::1" "0.0.0.0" "8.8.8.8" "1.1.1.1" "208.67.222.222" "1.0.0.1" "9.9.9.9")}
     EXCLUDE_PATHS=${EXCLUDE_PATHS:-("/opt/metasploit-framework" "/usr/share/metasploit-framework" "/usr/share/wordlists" "/home/*/go/bin" "/tmp/nuclei-templates" "/var/lib/docker" "/var/lib/containerd" "/snap")}
     CRITICAL_PATHS=${CRITICAL_PATHS:-("/etc/passwd" "/etc/shadow" "/etc/sudoers" "/etc/ssh/sshd_config" "/etc/hosts")}
 
- 
+    # Load and validate config file
     if [[ -f "$CONFIG_FILE" ]]; then
         if source "$CONFIG_FILE" 2>/dev/null; then
             log_info "Configuration loaded from $CONFIG_FILE"
@@ -895,26 +906,26 @@ log_alert() {
         $LOW)      echo -e "${GREEN}[LOW]${NC} $message" ;;
     esac
 
-
+    # Write to alert file with integrity check
     if [[ -n "$ALERTS_DIR" ]]; then
         mkdir -m 700 -p "$ALERTS_DIR" 2>/dev/null || true
         declare alert_file="$ALERTS_DIR/$(date +%Y%m%d).log"
         declare log_entry="[$timestamp] [LEVEL:$level] $message"
         echo "$log_entry" >> "$alert_file" 2>/dev/null || true
 
-      
+        # Add checksum for integrity
         echo "$(echo "$log_entry" | sha256sum | cut -d' ' -f1)" >> "$alert_file.hash" 2>/dev/null || true
     fi
 
- 
+    # Add to JSON output
     json_add_alert "$level" "$message" "$timestamp"
 
- 
+    # Send to syslog with facility (only if SYSLOG_ENABLED is set)
     if [[ "${SYSLOG_ENABLED:-false}" == true ]] && cmd logger; then
         logger -t "ghost-sentinel[$]" -p security.alert -i "$message" 2>/dev/null || true
     fi
 
-
+    # Critical alerts trigger immediate response
     if [[ $level -eq $CRITICAL ]]; then
         send_critical_alert "$message"
     fi
@@ -930,11 +941,11 @@ log_info() {
     fi
 }
 
-
+# Enhanced critical alert handling with fallbacks
 send_critical_alert() {
     declare message="$1"
 
-
+    # Email notification with fallback check
     if [[ "$SEND_EMAIL" == true ]] && [[ -n "$EMAIL_RECIPIENT" ]]; then
         if cmd mail; then
             echo "CRITICAL SECURITY ALERT: $message" | mail -s "Ghost Sentinel Alert" "$EMAIL_RECIPIENT" 2>/dev/null || true
@@ -943,20 +954,21 @@ send_critical_alert() {
         fi
     fi
 
-
+    # Webhook notification with improved error handling
     if [[ -n "$WEBHOOK_URL" ]] && cmd curl; then
         curl -s --max-time 10 -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{\"alert\":\"CRITICAL\",\"message\":\"$message\",\"timestamp\":\"$(date -Iseconds)\",\"hostname\":\"$(hostname)\"}" 2>/dev/null || true
     fi
 
+    # Slack webhook with rich formatting
     if [[ -n "$SLACK_WEBHOOK_URL" ]] && cmd curl; then
         declare payload=$(cat << EOF
 {
     "attachments": [
         {
             "color": "danger",
-            "title": "🚨 Ghost Sentinel v2.3 Critical Alert",
+            "title": "🚨 Ghost Sentinel v4.0 Critical Alert",
             "text": "$message",
             "fields": [
                 {
@@ -970,7 +982,7 @@ send_critical_alert() {
                     "short": true
                 }
             ],
-            "footer": "Ghost Sentinel v2.3",
+            "footer": "Ghost Sentinel v4.0",
             "ts": $(date +%s)
         }
     ]
@@ -982,7 +994,7 @@ EOF
             -d "$payload" 2>/dev/null || true
     fi
 
- 
+    # Desktop notification for interactive sessions (with fallbacks)
     if [[ -n "${DISPLAY:-}" ]]; then
         if cmd notify-send; then
             notify-send "Ghost Sentinel" "CRITICAL: $message" --urgency=critical 2>/dev/null || true
@@ -992,7 +1004,7 @@ EOF
     fi
 }
 
-
+# Enhanced threat intelligence with caching
 update_threat_intelligence() {
     if [[ "$ENABLE_THREAT_INTEL" != true ]]; then
         return
@@ -1003,7 +1015,7 @@ update_threat_intelligence() {
     declare intel_file="$THREAT_INTEL_DIR/malicious_ips.txt"
     declare intel_timestamp="$THREAT_INTEL_DIR/.last_update"
 
-
+    # Check if update is needed (every 6 hours by default)
     declare update_needed=true
     if [[ -f "$intel_timestamp" ]]; then
         declare last_update=$(cat "$intel_timestamp" 2>/dev/null || echo 0)
@@ -1017,7 +1029,7 @@ update_threat_intelligence() {
     fi
 
     if [[ "$update_needed" == true ]]; then
-     
+        # Download threat feeds (with timeout and verification)
         declare temp_file=$(mktemp)
 
         # FireHOL Level 1 blocklist (reliable source)
@@ -1040,7 +1052,7 @@ update_threat_intelligence() {
     fi
 }
 
-
+# Enhanced helper functions with exact matching
 is_whitelisted_process() {
     declare process="$1"
     declare proc_basename=$(basename "$process" 2>/dev/null || echo "$process")
@@ -1074,7 +1086,7 @@ is_private_address() {
         return 0
     fi
 
-    
+    # Multicast and broadcast
     if [[ "$addr" =~ ^(224\.|225\.|226\.|227\.|228\.|229\.|230\.|231\.|232\.|233\.|234\.|235\.|236\.|237\.|238\.|239\.) ]]; then
         return 0
     fi
@@ -1082,28 +1094,29 @@ is_private_address() {
     return 1
 }
 
-
+# Enhanced threat intelligence checking
 is_malicious_ip() {
     declare addr="$1"
     declare intel_file="$THREAT_INTEL_DIR/malicious_ips.txt"
 
-    
+    # Skip private addresses
     if is_private_address "$addr"; then
         return 1
     fi
 
-
+    # Check declare threat intelligence
     if [[ -f "$intel_file" ]]; then
         if grep -q "^$addr" "$intel_file" 2>/dev/null; then
             return 0
         fi
     fi
 
-
+    # Check against AbuseIPDB if API key is available
     if [[ -n "$ABUSEIPDB_API_KEY" ]] && cmd curl; then
         declare cache_file="$THREAT_INTEL_DIR/abuseipdb_$addr"
         declare cache_age=3600  # 1 hour cache
 
+        # Check cache first
         if [[ -f "$cache_file" ]]; then
             declare file_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
             if [[ $file_age -lt $cache_age ]]; then
@@ -1116,7 +1129,7 @@ is_malicious_ip() {
             fi
         fi
 
-    
+        # Query AbuseIPDB with rate limiting
         declare response=$(curl -s --max-time 5 -G https://api.abuseipdb.com/api/v2/check \
             --data-urlencode "ipAddress=$addr" \
             -H "Key: $ABUSEIPDB_API_KEY" \
@@ -1131,7 +1144,7 @@ is_malicious_ip() {
                 confidence=$(echo "$response" | grep -o '"abuseConfidencePercentage":[0-9]*' | cut -d: -f2 || echo 0)
             fi
 
-            
+            # Cache the result
             echo "$confidence" > "$cache_file"
 
             if [[ $confidence -gt 75 ]]; then
@@ -1143,6 +1156,7 @@ is_malicious_ip() {
     return 1
 }
 
+# Performance-optimized baseline creation
 create_baseline() {
     log_info "Creating optimized security baseline..."
 
@@ -1153,31 +1167,32 @@ create_baseline() {
         netstat -tulnp --numeric-hosts --numeric-ports > "$BASELINE_DIR/network_baseline.txt" 2>/dev/null || true
     fi
 
-    # Process baseline (structured could be wrong)
+    # Process baseline (structured)
     ps -eo pid,ppid,user,comm,cmd --no-headers > "$BASELINE_DIR/process_baseline.txt" 2>/dev/null || true
 
-
+    # Services baseline
     if cmd systemctl; then
         systemctl list-units --type=service --state=running --no-pager --no-legend --plain > "$BASELINE_DIR/services_baseline.txt" 2>/dev/null || true
     fi
 
+    # Critical file baselines (performance optimized)
     for file in "${CRITICAL_PATHS[@]}"; do
         if [[ -e "$file" ]] && [[ -r "$file" ]] && [[ -f "$file" ]]; then
             sha256sum "$file" > "$BASELINE_DIR/$(basename "$file")_baseline.sha256" 2>/dev/null || true
         fi
     done
 
- 
+    # User baseline
     if [[ -r /etc/passwd ]]; then
         cut -d: -f1 /etc/passwd | sort > "$BASELINE_DIR/users_baseline.txt" 2>/dev/null || true
     fi
 
- 
+    # Login history (limited)
     if cmd last; then
         last -n 10 --time-format=iso > "$BASELINE_DIR/last_baseline.txt" 2>/dev/null || true
     fi
 
- 
+    # Package state (hash only for performance)
     declare pkg_hash=""
     if [[ "$IS_DEBIAN" == true ]]; then
         pkg_hash=$(dpkg -l 2>/dev/null | sha256sum | cut -d' ' -f1)
@@ -1197,22 +1212,22 @@ create_baseline() {
         echo "$pkg_hash" > "$BASELINE_DIR/packages_hash.txt"
     fi
 
-  
+    # SUID/SGID baseline (limited scope)
     find /usr/bin /usr/sbin /bin /sbin -maxdepth 1 -perm /4000 -o -perm /2000 2>/dev/null | sort > "$BASELINE_DIR/suid_baseline.txt" || true
 
     log_info "Baseline created successfully"
 }
 
-
+# Production main function with all v4.0 features
 main_enhanced() {
     declare start_time=$(date +%s)
 
-    log_info "Ghost Sentinel v2.3 Enhanced - Starting advanced security scan..."
+    log_info "Ghost Sentinel v4.0 Enhanced - Starting advanced security scan..."
 
-   
+    # Load configuration first
     load_config_safe
 
- 
+    # Update JSON metadata
     json_set "$JSON_OUTPUT_FILE" ".scan_start" "$(date -Iseconds)"
     json_set "$JSON_OUTPUT_FILE" ".hostname" "$(hostname)"
     json_set "$JSON_OUTPUT_FILE" ".environment.user" "$USER"
@@ -1227,10 +1242,10 @@ main_enhanced() {
     json_set "$JSON_OUTPUT_FILE" ".environment.threat_intel" "$ENABLE_THREAT_INTEL"
     json_set "$JSON_OUTPUT_FILE" ".environment.forensics" "true"
 
-  
+    # Initialize system
     init_sentinel
 
-   
+    # Start advanced monitoring features
     declare features_enabled=()
 
     if [[ "$ENABLE_EBPF" == true ]] && [[ "$HAS_BCC" == true ]] && [[ $EUID -eq 0 ]]; then
@@ -1250,13 +1265,13 @@ main_enhanced() {
         json_set "$JSON_OUTPUT_FILE" ".features.yara_scanning" "true"
     fi
 
-  
+    # Set additional features
     json_set "$JSON_OUTPUT_FILE" ".features.anti_evasion" "$ENABLE_ANTI_EVASION"
     json_set "$JSON_OUTPUT_FILE" ".features.threat_intelligence" "$ENABLE_THREAT_INTEL"
     json_set "$JSON_OUTPUT_FILE" ".features.forensic_analysis" "true"
     json_set "$JSON_OUTPUT_FILE" ".features.api_server" "true"
 
- 
+    # Run monitoring modules with timeout protection
     declare modules_run=()
 
     if [[ "$ENABLE_ANTI_EVASION" == true ]]; then
@@ -1301,11 +1316,11 @@ main_enhanced() {
     declare end_time=$(date +%s)
     declare duration=$((end_time - start_time))
 
-
+    # Update final JSON metadata
     json_set "$JSON_OUTPUT_FILE" ".scan_end" "$(date -Iseconds)"
     json_set "$JSON_OUTPUT_FILE" ".performance.scan_duration" "$duration"
 
-
+    # Generate comprehensive summary
     generate_enhanced_summary "$duration" "${modules_run[@]}"
 
     log_info "Advanced security scan completed in ${duration}s"
@@ -1315,7 +1330,7 @@ main_enhanced() {
     fi
 }
 
-
+# Enhanced summary with module and feature status
 generate_enhanced_summary() {
     declare duration="$1"
     shift
@@ -1345,7 +1360,7 @@ generate_enhanced_summary() {
     fi
 
     echo
-    echo -e "${CYAN}=== GHOST SENTINEL v2.3 ADVANCED SECURITY SUMMARY ===${NC}"
+    echo -e "${CYAN}=== GHOST SENTINEL v4.0 ADVANCED SECURITY SUMMARY ===${NC}"
     echo -e "${YELLOW}Scan Duration: ${duration}s${NC}"
     echo -e "${YELLOW}Modules Run: ${#modules_run[@]} (${modules_run[*]})${NC}"
     echo -e "${YELLOW}Total Alerts: $alert_count${NC}"
@@ -1358,7 +1373,7 @@ generate_enhanced_summary() {
     echo -e "${CYAN}Logs: $LOG_DIR${NC}"
     echo -e "${CYAN}JSON Output: $JSON_OUTPUT_FILE${NC}"
 
-  
+    # Show active advanced features
     declare active_features=()
     if [[ -f "$LOG_DIR/ebpf_monitor.pid" ]]; then
         active_features+=("eBPF Monitoring")
@@ -1400,14 +1415,14 @@ generate_enhanced_summary() {
     fi
 }
 
-#enhance if needed but the risk is low for most 
+# Minimal required functions for compatibility
 monitor_network() { monitor_network_advanced; }
 
 monitor_processes() {
     if [[ "$MONITOR_PROCESSES" != true ]]; then return; fi
     log_info "Basic process monitoring..."
 
-    # suspicious processes
+    # Check for suspicious processes
     declare suspicious_procs=("^nc" "netcat" "socat" "ncat")
     for proc in "${suspicious_procs[@]}"; do
         if pgrep -f "$proc" >/dev/null 2>&1; then
@@ -1437,7 +1452,7 @@ monitor_users() {
     if [[ "$MONITOR_USERS" != true ]]; then return; fi
     log_info "Basic user monitoring..."
 
-    # Check for new users -- need to handle this better than I am 
+    # Check for new users
     if [[ -r /etc/passwd ]] && [[ -f "$BASELINE_DIR/users_baseline.txt" ]]; then
         declare current_users=$(cut -d: -f1 /etc/passwd | sort)
         declare new_users=$(comm -13 "$BASELINE_DIR/users_baseline.txt" <(echo "$current_users") 2>/dev/null | head -3)
@@ -1456,7 +1471,7 @@ monitor_rootkits() {
     if [[ "$MONITOR_ROOTKITS" != true ]]; then return; fi
     log_info "Basic rootkit detection..."
 
-    
+    # Check for common rootkit indicators
     declare rootkit_paths=("/tmp/.ICE-unix/.X11-unix" "/dev/shm/.hidden" "/tmp/.hidden" "/usr/bin/..." "/usr/sbin/...")
 
     for path in "${rootkit_paths[@]}"; do
@@ -1484,9 +1499,9 @@ monitor_memory() {
     done
 }
 
-
+# Original compatibility function
 main() {
-    log_info "Ghost Sentinel v2.3 starting security scan..."
+    log_info "Ghost Sentinel v4.0 starting security scan..."
 
     init_sentinel
 
@@ -1510,7 +1525,7 @@ main() {
     fi
 }
 
-
+# Enhanced installation with systemd integration
 install_cron() {
     declare cron_entry="0 * * * * $SCRIPT_DIR/$SCRIPT_NAME >/dev/null 2>&1"
 
@@ -1529,13 +1544,13 @@ install_cron() {
         return 1
     fi
 
-
+    # Optionally create systemd service
     if cmd systemctl; then
         create_systemd_service
     fi
 }
 
-
+# Create systemd service for enhanced integration
 create_systemd_service() {
     declare systemd_args=""
     if [[ "$EUID" -eq 0 ]]; then
@@ -1548,7 +1563,7 @@ create_systemd_service() {
     fi
     cat > "$service_file" << EOF
 [Unit]
-Description=Ghost Sentinel v2.3 Security Monitor
+Description=Ghost Sentinel v4.0 Security Monitor
 After=network.target
 
 [Service]
@@ -1588,11 +1603,11 @@ self_update() {
     declare temp_sig=$(mktemp)
 
     if cmd curl; then
-     
+        # Download script and signature
         if curl -s --max-time 30 -o "$temp_file" "$update_url" && \
            curl -s --max-time 30 -o "$temp_sig" "$update_url.sig"; then
 
-            
+            # Verify GPG signature if available
             if cmd gpg && [[ -s "$temp_sig" ]]; then
                 if gpg --verify "$temp_sig" "$temp_file" 2>/dev/null; then
                     log_info "GPG signature verified"
@@ -1603,12 +1618,12 @@ self_update() {
                 fi
             fi
 
-       
+            # Basic validation
             if [[ -s "$temp_file" ]] && head -1 "$temp_file" | grep -q "#!/bin/bash"; then
                 # Backup current version
                 cp "$SCRIPT_PATH" "$SCRIPT_PATH.backup.$(date +%s)"
 
-               
+                # Install update
                 chmod +x "$temp_file"
                 mv "$temp_file" "$SCRIPT_PATH"
                 rm -f "$temp_sig"
@@ -1636,7 +1651,7 @@ self_update() {
 # Acquire exclusive lock with stale lock detection
 acquire_lock
 
-
+# Command line interface with new v4.0 options
 case "${1:-run}" in
 "install")
     install_cron
@@ -1678,9 +1693,9 @@ case "${1:-run}" in
     fi
     ;;
 "test")
-    echo "Testing Ghost Sentinel v2.3..."
+    echo "Testing Ghost Sentinel v4.0..."
     init_sentinel
-    log_alert $HIGH "Test alert - Ghost Sentinel v2.3 is working"
+    log_alert $HIGH "Test alert - Ghost Sentinel v4.0 is working"
     echo -e "${GREEN}✓ Test completed successfully!${NC}"
     echo -e "${CYAN}Advanced Capabilities:${NC}"
     echo -e "  YARA: $HAS_YARA"
@@ -1703,13 +1718,13 @@ case "${1:-run}" in
     main_enhanced
     ;;
 "integrity")
- 
+    # Load config first to set variables
     load_config_safe
     validate_script_integrity
     echo -e "${GREEN}✓ Script integrity check completed${NC}"
     ;;
 "reset-integrity")
-   
+    # Reset script integrity hash after updates
     mkdir -m 700 -p "$LOG_DIR" 2>/dev/null || true
     declare script_hash_file="$LOG_DIR/.script_hash"
     declare current_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1)
@@ -1718,7 +1733,7 @@ case "${1:-run}" in
     echo "Current hash: $current_hash"
     ;;
 "fix-hostname")
-    # Fix the hostname issue - this pissed me off 
+    # Fix the hostname resolution issue
     declare current_hostname=$(hostname)
     if ! grep -q "$current_hostname" /etc/hosts; then
         echo "127.0.0.1 $current_hostname" | sudo tee -a /etc/hosts >/dev/null
@@ -1756,7 +1771,7 @@ case "${1:-run}" in
     fi
     ;;
 "status")
-    echo "Ghost Sentinel v2.3 Status:"
+    echo "Ghost Sentinel v4.0 Status:"
     echo "=========================="
 
     if [[ -f "$LOG_DIR/honeypot.pids" ]]; then

@@ -1798,11 +1798,17 @@ case "${1:-run}" in
 "dashboard")
     if [[ -f "theProtector.go" ]] && command -v go >/dev/null 2>&1; then
         log_info "Starting Ghost Sentinel Dashboard..."
-        go run theProtector.go &
-        echo $! > "$LOG_DIR/dashboard.pid"
-        log_info "Dashboard started on http://localhost:8082"
-        log_info "Press Ctrl+C to stop"
-        wait
+        nohup go run theProtector.go >/dev/null 2>&1 &
+        pid=$!
+        echo $pid > "$LOG_DIR/dashboard.pid"
+        sleep 2  # Give it time to start
+        if kill -0 $pid 2>/dev/null; then
+            log_info "Dashboard started on http://localhost:8082"
+            log_info "Dashboard is running in background (PID: $pid)"
+        else
+            log_alert $HIGH "Failed to start dashboard"
+            rm -f "$LOG_DIR/dashboard.pid"
+        fi
     else
         echo "Go or theProtector.go not found - cannot start dashboard"
     fi

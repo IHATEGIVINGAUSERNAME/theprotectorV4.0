@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -73,14 +72,231 @@ func main() {
 	http.HandleFunc("/api/security", securityAPIHandler)
 	http.HandleFunc("/api/run-scan", runScanHandler)
 	http.HandleFunc("/ws", wsHandler)
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	// Removed static file serving to prevent path traversal vulnerabilities
 
-	fmt.Println("Ghost Sentinel Dashboard starting on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// Silent startup - no console output for security
+	log.SetOutput(os.Stderr) // Redirect logs to stderr, not stdout
+	log.Fatal(http.ListenAndServe(":8082", nil))
 }
 
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl := template.Must(template.ParseFiles("templates/dashboard.html"))
+	// Embedded HTML template to avoid file system dependencies
+	dashboardHTML := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>theProtector Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #474343ff; color: #fff; }
+        .header { background: linear-gradient(135deg, #ba0018 80%, #b80505ff 20%); padding: 20px; text-align: center; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
+        .card { background: #2d3748; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .card h3 { color: #667eea; margin-bottom: 15px; }
+        .metric { display: flex; justify-content: space-between; margin: 10px 0; }
+        .metric-value { font-weight: bold; color: #48bb78; }
+        .alert { background: #742a2a; border-left: 4px solid #fc8181; padding: 10px; margin: 5px 0; border-radius: 4px; }
+        .alert.critical { border-left-color: #fc8181; background: #742a2a; }
+        .alert.high { border-left-color: #f6ad55; background: #744210; }
+        .alert.medium { border-left-color: #68d391; background: #22543d; }
+        .status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        .status-active { background: #48bb78; }
+        .status-inactive { background: #f56565; }
+        .btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+        .btn:hover { background: #5a67d8; }
+        .chart-container { height: 200px; position: relative; }
+        #systemChart { width: 100%; height: 100%; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ Ghost Sentinel Dashboard</h1>
+        <p>Advanced Security Monitoring Suite v2.3</p>
+    </div>
+    
+    <div class="container">
+        <div class="grid">
+            <div class="card">
+                <h3>System Metrics</h3>
+                <div class="chart-container">
+                    <canvas id="systemChart"></canvas>
+                </div>
+                <div class="metric">
+                    <span>CPU Usage:</span>
+                    <span class="metric-value" id="cpu">0%</span>
+                </div>
+                <div class="metric">
+                    <span>Memory Usage:</span>
+                    <span class="metric-value" id="memory">0%</span>
+                </div>
+                <div class="metric">
+                    <span>Disk Usage:</span>
+                    <span class="metric-value" id="disk">0%</span>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Security Status</h3>
+                <div class="metric">
+                    <span><span class="status-indicator" id="ebpf-status"></span>eBPF Monitoring:</span>
+                    <span id="ebpf-text">Checking...</span>
+                </div>
+                <div class="metric">
+                    <span><span class="status-indicator" id="yara-status"></span>YARA Malware:</span>
+                    <span id="yara-text">Checking...</span>
+                </div>
+                <div class="metric">
+                    <span><span class="status-indicator" id="honeypot-status"></span>Honeypots:</span>
+                    <span id="honeypot-text">Checking...</span>
+                </div>
+                <div class="metric">
+                    <span><span class="status-indicator" id="forensic-status"></span>Forensics:</span>
+                    <span id="forensic-text">Checking...</span>
+                </div>
+                <button class="btn" onclick="runScan()">Run Security Scan</button>
+            </div>
+            
+            <div class="card">
+                <h3>Active Alerts</h3>
+                <div id="alerts-container">
+                    <p>Loading alerts...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart;
+        let socket;
+        
+        function initChart() {
+            const ctx = document.getElementById('systemChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'CPU %',
+                        data: [],
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Memory %',
+                        data: [],
+                        borderColor: '#48bb78',
+                        backgroundColor: 'rgba(72, 187, 120, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, max: 100 }
+                    },
+                    plugins: { legend: { display: true } }
+                }
+            });
+        }
+        
+        function connectWebSocket() {
+            socket = new WebSocket('ws://localhost:8082/ws');
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                updateMetrics(data);
+                updateChart(data);
+            };
+            socket.onclose = function() {
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+        
+        function updateMetrics(data) {
+            document.getElementById('cpu').textContent = data.cpu.toFixed(1) + '%';
+            document.getElementById('memory').textContent = data.memory.toFixed(1) + '%';
+            document.getElementById('disk').textContent = data.disk.toFixed(1) + '%';
+        }
+        
+        function updateChart(data) {
+            const now = new Date().toLocaleTimeString();
+            chart.data.labels.push(now);
+            chart.data.datasets[0].data.push(data.cpu);
+            chart.data.datasets[1].data.push(data.memory);
+            
+            if (chart.data.labels.length > 20) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+                chart.data.datasets[1].data.shift();
+            }
+            chart.update('none');
+        }
+        
+        function loadSecurityStatus() {
+            fetch('/api/security')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus('ebpf', data.ebpf_monitoring);
+                    updateStatus('yara', data.yara_malware);
+                    updateStatus('honeypot', data.network_honeypots);
+                    updateStatus('forensic', data.forensic_enabled);
+                    displayAlerts(data.active_alerts);
+                });
+        }
+        
+        function updateStatus(type, active) {
+            const indicator = document.getElementById(type + '-status');
+            const text = document.getElementById(type + '-text');
+            if (active) {
+                indicator.className = 'status-indicator status-active';
+                text.textContent = 'Active';
+            } else {
+                indicator.className = 'status-indicator status-inactive';
+                text.textContent = 'Inactive';
+            }
+        }
+        
+        function displayAlerts(alerts) {
+            const container = document.getElementById('alerts-container');
+            if (alerts.length === 0) {
+                container.innerHTML = '<p>No active alerts</p>';
+                return;
+            }
+            
+            container.innerHTML = alerts.map(alert => 
+                '<div class="alert ' + alert.level.toLowerCase() + '">' +
+                '<strong>' + alert.level + '</strong>: ' + alert.message +
+                '<div style="font-size: 0.8em; margin-top: 5px;">' + alert.timestamp + '</div>' +
+                '</div>'
+            ).join('');
+        }
+        
+        function runScan() {
+            fetch('/api/run-scan', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Security scan started successfully!');
+                        setTimeout(loadSecurityStatus, 2000);
+                    }
+                });
+        }
+        
+        // Initialize
+        window.onload = function() {
+            initChart();
+            connectWebSocket();
+            loadSecurityStatus();
+            setInterval(loadSecurityStatus, 30000);
+        };
+    </script>
+</body>
+</html>`
+	
+	tmpl := template.Must(template.New("dashboard").Parse(dashboardHTML))
 	tmpl.Execute(w, nil)
 }
 
@@ -108,29 +324,28 @@ func runScanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
-	cmd := exec.Command("./theprotectorV4.0.sh", "enhanced")
-	output, err := cmd.CombinedOutput()
+	// Start scan in background without exposing output for security
+	go func() {
+		cmd := exec.Command("./theProtectorV4.sh", "enhanced")
+		cmd.Run() // Discard output for security
+	}()
 
 	response := map[string]interface{}{
-		"success": err == nil,
-		"output":  string(output),
-	}
-
-	if err != nil {
-		response["error"] = err.Error()
+		"success": true,
+		"message": "Security scan started in background",
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
-// WebSocket is just a copy and paste from previous project with minor adjustments
+// WebSocket handler - minimal logging for security
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("WebSocket upgrade failed:", err)
+		// Silent failure for security
 		return
 	}
+
 	defer conn.Close()
 
 	clientsMu.Lock()
@@ -152,7 +367,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func monitorSystemStats() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -165,7 +380,6 @@ func monitorSystemStats() {
 		}
 		statsMu.Unlock()
 
-	
 		clientsMu.Lock()
 		for client := range clients {
 			if err := client.WriteJSON(stat); err != nil {
@@ -244,7 +458,7 @@ func getDiskUsage() float64 {
 
 func getSecurityStatus() SecurityStatus {
 
-	scriptPath := "./theprotectorV4.0.sh"
+	scriptPath := "./theProtectorV4.sh"
 	status := SecurityStatus{
 		LastScan: time.Now().Format("2006-01-02 15:04:05"),
 	}
@@ -405,6 +619,10 @@ func getActiveAlerts() []Alert {
 	// Check alert files --- Keep it Simple ---
 	alertDir := os.Getenv("HOME") + "/.ghost-sentinel/logs/alerts"
 	if _, err := os.Stat(alertDir); os.IsNotExist(err) {
+		// Fallback to system log directory
+		alertDir = "/var/log/ghost-sentinel/alerts"
+	}
+	if _, err := os.Stat(alertDir); os.IsNotExist(err) {
 		return alerts
 	}
 
@@ -421,15 +639,25 @@ func getActiveAlerts() []Alert {
 
 		lines := strings.Split(string(content), "\n")
 		for _, line := range lines {
-			if strings.Contains(line, "[CRITICAL]") || strings.Contains(line, "[HIGH]") {
+			// Check for LEVEL format: [LEVEL:1] for CRITICAL, [LEVEL:2] for HIGH
+			if strings.Contains(line, "[LEVEL:") {
 				alert := Alert{
 					Level:     "HIGH",
 					Message:   strings.TrimSpace(line),
 					Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 				}
-				if strings.Contains(line, "[CRITICAL]") {
+				
+				// Extract level number
+				if strings.Contains(line, "[LEVEL:1]") {
 					alert.Level = "CRITICAL"
+				} else if strings.Contains(line, "[LEVEL:2]") {
+					alert.Level = "HIGH"
+				} else if strings.Contains(line, "[LEVEL:3]") {
+					alert.Level = "MEDIUM"
+				} else if strings.Contains(line, "[LEVEL:4]") {
+					alert.Level = "LOW"
 				}
+				
 				alerts = append(alerts, alert)
 			}
 		}

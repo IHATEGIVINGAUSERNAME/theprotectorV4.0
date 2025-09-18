@@ -1,4 +1,4 @@
-# Ghost Sentinel v4 - Advanced Security Monitoring Suite
+# theProtector v4 - Advanced Security Monitoring Suite
 
 Ghost Sentinel is a comprehensive, enterprise-grade security monitoring system designed for Linux environments. It combines traditional security monitoring with advanced threat detection capabilities including eBPF kernel monitoring, YARA malware scanning, dynamic honeypots, and forensic analysis.
 

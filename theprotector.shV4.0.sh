@@ -59,6 +59,35 @@ NETCAT_BIN="nc"
 cmd() {
     command -v "$1" >/dev/null 2>&1
 }
+sanitize_input() {
+    printf '%s\n' "$1" | sed 's/[^a-zA-Z0-9._-]/ /g' | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+sanitize_path() {
+    printf '%s\n' "$1" | sed 's/[^a-zA-Z0-9._/-]/ /g' | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+verify_gpg_signature() {
+    local file="$1"
+    local sig_file="$2"
+    local key_id="$3"
+    if cmd gpg && [[ -f "$file" ]] && [[ -f "$sig_file" ]]; then
+        if gpg --verify "$sig_file" "$file" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+check_dependency_integrity() {
+    local tool="$1"
+    local expected_hash="$2"
+    if cmd "$tool"; then
+        local actual_hash
+        actual_hash=$(sha256sum "$(command -v "$tool")" 2>/dev/null | cut -d' ' -f1)
+        if [[ "$actual_hash" == "$expected_hash" ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
 cleanup() {
     declare exit_code=$?
     stop_honeypots
@@ -69,12 +98,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 acquire_lock() {
     if [[ -f "$LOCK_FILE" ]]; then
-        declare lock_pid=""
+        local lock_pid=""
         if [[ -f "$PID_FILE" ]]; then
             lock_pid=$(cat "$PID_FILE" 2>/dev/null || printf "\n")
         fi
         if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-            printf "Another instance is running (PID: $lock_pid). Exiting.\n"
+            printf "Another instance is running (PID: %s). Exiting.\n" "$lock_pid"
             exit 1
         else
             rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
@@ -107,20 +136,20 @@ check_dependencies() {
     fi
     if cmd nc; then
         HAS_NETCAT=true
-        [[ "$VERBOSE" == true ]] && log_info "Detected 'nc' executable"
+        [[ "$VERBOSE" == true ]] && printf "Detected 'nc' executable\n"
     elif cmd netcat; then
         HAS_NETCAT=true
         NETCAT_BIN="netcat"
-        [[ "$VERBOSE" == true ]] && log_info "Detected 'netcat' executable"
+        [[ "$VERBOSE" == true ]] && printf "Detected 'netcat' executable\n"
     fi
     if [[ "$HAS_JQ" == false ]]; then
-        log_info "jq not found - JSON output will be basic"
+        printf "jq not found - JSON output will be basic\n"
     fi
     if [[ "$HAS_YARA" == false ]]; then
-        log_info "YARA not found - malware scanning disabled"
+        printf "YARA not found - malware scanning disabled\n"
     fi
     if [[ "$HAS_BCC" == false ]]; then
-        log_info "eBPF tools not found - kernel monitoring disabled"
+        printf "eBPF tools not found - kernel monitoring disabled\n"
     fi
 }
 detect_environment() {
@@ -153,7 +182,7 @@ validate_script_integrity() {
             printf "Current:  $current_hash\n"
             printf "\n"
             printf "This is normal after script updates. To reset:\n"
-            printf "  sudo ./theprotector.sh reset-integrity\n"
+            printf "  sudo ./theProtectorV4.sh reset-integrity\n"
             printf "\n"
             read -p "Continue anyway? (y/N): " -n 1 -r
             printf "\n"
@@ -743,27 +772,10 @@ class EnterpriseEBPFMonitor:
         self.stats = defaultdict(int)
         self.rate_limits = defaultdict(lambda: defaultdict(int))
         self.last_alert_time = defaultdict(float)
-        self.whitelist_processes = {
-            'firefox', 'chrome', 'nmap', 'masscan', 'nuclei', 'gobuster', 'ffuf', 'subfinder', 'httpx', 'amass',
-            'burpsuite', 'wireshark', 'metasploit', 'sqlmap', 'nikto', 'dirb', 'wpscan', 'john', 'docker',
-            'containerd', 'systemd', 'kthreadd', 'bash', 'zsh', 'ssh', 'python3', 'yara', 'wget', 'curl',
-            'git', 'apt', 'yum', 'dnf', 'pacman', 'rsync', 'scp', 'sftp', 'vim', 'nano', 'emacs', 'code',
-            'go', 'node', 'npm', 'pip', 'cargo', 'make', 'gcc', 'clang', 'gdb', 'strace', 'ltrace',
-            'tcpdump', 'netstat', 'ss', 'lsof', 'ps', 'top', 'htop', 'iotop', 'nethogs', 'iftop',
-            'grep', 'awk', 'sed', 'find', 'locate', 'which', 'whereis', 'file', 'stat', 'du', 'df',
-            'mount', 'umount', 'fdisk', 'parted', 'lsblk', 'blkid', 'uname', 'uptime', 'who', 'w',
-            'last', 'lastlog', 'history', 'crontab', 'systemctl', 'service', 'chkconfig', 'update-rc.d',
-            'iptables', 'ufw', 'firewall-cmd', 'fail2ban-client', 'logrotate', 'rsyslog', 'journalctl',
-            'openssl', 'gpg', 'ssh-keygen', 'certbot', 'ansible', 'terraform', 'kubectl', 'helm',
-            'docker-compose', 'vagrant', 'virtualbox', 'qemu', 'kvm', 'libvirt', 'virt-manager'
-        }
-        self.whitelist_parent_processes = {
-            'systemd', 'init', 'kthreadd', 'bash', 'zsh', 'sh', 'dash', 'fish', 'csh', 'tcsh',
-            'screen', 'tmux', 'sudo', 'su', 'doas', 'cron', 'anacron', 'systemd-cron',
-            'sshd', 'ssh', 'ansible', 'puppet', 'chef-client', 'salt-minion', 'docker', 'containerd',
-            'systemctl', 'service', 'make', 'cmake', 'ninja', 'meson', 'autoconf', 'automake',
-            'gcc', 'clang', 'go', 'rustc', 'javac', 'python', 'python3', 'node', 'ruby', 'perl',
-            'vim', 'nano', 'emacs', 'code', 'subl', 'atom', 'gedit', 'kate', 'eclipse', 'idea'
+        # Immutable hash-based whitelist (SHA256 of binary)
+        self.whitelist_hashes = {
+            # Example: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            # Add actual hashes for trusted binaries here
         }
         self.suspicious_patterns = {
             'exec': [
@@ -778,34 +790,23 @@ class EnterpriseEBPFMonitor:
                 b'/home/*/.ssh', b'/etc/crontab', b'/etc/rc.local'
             ]
         }
-    def is_whitelisted_process(self, comm, parent_comm=None):
-        if comm.lower() in self.whitelist_processes:
-            return True
-        if parent_comm and parent_comm.lower() in self.whitelist_parent_processes:
-            return True
-        return False
+    def is_whitelisted_process(self, comm, pid):
+        import hashlib, os
+        exe_path = f"/proc/{pid}/exe"
+        try:
+            if os.path.exists(exe_path):
+                with open(exe_path, 'rb') as f:
+                    data = f.read()
+                hashval = hashlib.sha256(data).hexdigest()
+                if hashval in self.whitelist_hashes:
+                    return True, hashval
+        except Exception:
+            pass
+        return False, None
 
-    def should_rate_limit(self, alert_type, key, max_per_minute=5):
-        current_time = time.time()
-        minute_key = int(current_time / 60)
-        rate_key = f"{alert_type}_{key}"
-        
-        if self.rate_limits[rate_key][minute_key] >= max_per_minute:
-            return True
-        
-        self.rate_limits[rate_key][minute_key] += 1
-        
-        old_keys = [k for k in self.rate_limits[rate_key].keys() if k < minute_key - 2]
-        for k in old_keys:
-            del self.rate_limits[rate_key][k]
-        
-        return False
+    # No rate limiting for critical alerts
 
     def log_alert(self, alert_type, severity, message, data=None):
-        rate_key = data.get('pid', 'unknown') if data else 'unknown'
-        if self.should_rate_limit(alert_type, rate_key):
-            return
-            
         alert = {
             'timestamp': datetime.now().isoformat(),
             'type': alert_type,
@@ -840,8 +841,8 @@ struct exec_event_t {
     u32 uid;
     u32 gid;
     char comm[TASK_COMM_LEN];
-    char filename[256];
-    char args[512];
+    char filename[128];
+    char args[128];
 };
 
 struct network_event_t {
@@ -948,26 +949,34 @@ def print_exec_event(cpu, data, size):
     comm = event.comm.decode('utf-8', 'replace')
     args = event.args.decode('utf-8', 'replace').strip()
     
-    parent_comm = get_parent_comm(event.ppid)
-    
-    if monitor.is_whitelisted_process(comm, parent_comm):
+    whitelisted, hashval = monitor.is_whitelisted_process(comm, event.pid)
+    if whitelisted:
+        # Log forensics, but do not alert
+        forensic = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'WHITELISTED_EXEC',
+            'process': comm,
+            'pid': event.pid,
+            'hash': hashval,
+            'filename': filename,
+            'args': args
+        }
+        with open('$LOG_DIR/ebpf_forensics.jsonl', 'a') as f:
+            f.write(json.dumps(forensic) + '\n')
         return
-    
     suspicious = False
     for pattern in monitor.suspicious_patterns['exec']:
         if pattern in filename.encode() or pattern in args.encode():
             suspicious = True
             break
-    
-    if event.uid != event.gid and event.uid == 0 and not monitor.is_whitelisted_process(comm, parent_comm):
+    if event.uid != event.gid and event.uid == 0:
         monitor.log_alert('PRIVILEGE_ESCALATION', 'HIGH',
                          f'Potential privilege escalation: {comm} (PID: {event.pid}, UID: {event.uid})',
-                         {'pid': event.pid, 'uid': event.uid, 'command': comm, 'filename': filename, 'parent': parent_comm})
-    
-    if suspicious and not monitor.is_whitelisted_process(comm, parent_comm):
+                         {'pid': event.pid, 'uid': event.uid, 'command': comm, 'filename': filename})
+    if suspicious:
         monitor.log_alert('SUSPICIOUS_EXEC', 'MEDIUM',
                          f'Suspicious execution: {comm} {args}',
-                         {'pid': event.pid, 'ppid': event.ppid, 'command': comm, 'args': args, 'parent': parent_comm})
+                         {'pid': event.pid, 'ppid': event.ppid, 'command': comm, 'args': args})
 def print_network_event(cpu, data, size):
     event = b["network_events"].event(data)
     saddr = socket.inet_ntoa(struct.pack('<I', event.saddr))
@@ -976,7 +985,20 @@ def print_network_event(cpu, data, size):
     dport = socket.ntohs(event.dport)
     comm = event.comm.decode('utf-8', 'replace')
     
-    if monitor.is_whitelisted_process(comm):
+    whitelisted, hashval = monitor.is_whitelisted_process(comm, event.pid)
+    if whitelisted:
+        forensic = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'WHITELISTED_NETWORK',
+            'process': comm,
+            'pid': event.pid,
+            'hash': hashval,
+            'src': f'{saddr}:{sport}',
+            'dst': f'{daddr}:{dport}',
+            'proto': 'TCP'
+        }
+        with open('$LOG_DIR/ebpf_forensics.jsonl', 'a') as f:
+            f.write(json.dumps(forensic) + '\n')
         return
     
     suspicious_ports = [4444, 6667, 1337, 31337, 8080, 9999]
@@ -1002,7 +1024,18 @@ def print_file_event(cpu, data, size):
     filename = event.filename.decode('utf-8', 'replace')
     comm = event.comm.decode('utf-8', 'replace')
     
-    if monitor.is_whitelisted_process(comm):
+    whitelisted, hashval = monitor.is_whitelisted_process(comm, event.pid)
+    if whitelisted:
+        forensic = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'WHITELISTED_FILE',
+            'process': comm,
+            'pid': event.pid,
+            'hash': hashval,
+            'filename': filename
+        }
+        with open('$LOG_DIR/ebpf_forensics.jsonl', 'a') as f:
+            f.write(json.dumps(forensic) + '\n')
         return
     
     if filename.startswith(('/proc/', '/sys/', '/dev/pts/', '/tmp/.')):
@@ -1516,10 +1549,15 @@ monitor_files_with_yara() {
     declare scan_locations=("/tmp" "/var/tmp" "/dev/shm")
     for location in "${scan_locations[@]}"; do
         if [[ -d "$location" ]] && [[ -r "$location" ]]; then
-            find "$location" -maxdepth 2 -type f -mtime -1 2>/dev/null | while read -r file; do
-                # Skip very large files for performance
-                declare file_size=$(stat -c%s "$file" 2>/dev/null || printf "0\n")
-                if [[ $file_size -gt 1048576 ]]; then  
+            find "$location" -type f 2>/dev/null | while read -r file; do
+                local excluded=false
+                for exclude_path in "${EXCLUDE_PATHS[@]}"; do
+                    if [[ "$file" == $exclude_path* ]]; then
+                        excluded=true
+                        break
+                    fi
+                done
+                if [[ "$excluded" == true ]]; then
                     continue
                 fi
                 if [[ "$HAS_YARA" == true ]]; then
@@ -1532,7 +1570,7 @@ monitor_files_with_yara() {
                     fi
                 fi
                 if [[ -r "$file" ]]; then
-                    declare suspicious_content=$(grep -l -E "(eval.*base64|exec.*\\\$|/dev/tcp|socket\.socket.*connect)" "$file" 2>/dev/null || printf "")
+                    declare suspicious_content=$(grep -l -E "(eval.*base64|exec.*\\$|/dev/tcp|socket\.socket.*connect)" "$file" 2>/dev/null || printf "")
                     if [[ -n "$suspicious_content" ]]; then
                         log_alert $HIGH "Suspicious script content: $file"
                         quarantine_file_forensic "$file"
@@ -1545,33 +1583,34 @@ monitor_files_with_yara() {
 
 #=====Quarantine System=====#
 quarantine_file_forensic() {
-    declare file="$1"
-    declare timestamp=$(date +%s)
-    declare quarantine_name="$(basename "$file")_$timestamp"
+    local file="$1"
+    local sanitized_file=$(sanitize_path "$file")
+    local timestamp=$(date +%s)
+    local quarantine_name="$(basename "$sanitized_file")_$timestamp"
 
-    if [[ -f "$file" ]] && [[ -w "$(dirname "$file")" ]]; then
-        declare forensic_dir="$QUARANTINE_DIR/forensics"
+    if [[ -f "$sanitized_file" ]] && [[ -w "$(dirname "$sanitized_file")" ]]; then
+        local forensic_dir="$QUARANTINE_DIR/forensics"
         mkdir -p "$forensic_dir"
         chmod 700 "$forensic_dir"
-        stat "$file" > "$forensic_dir/${quarantine_name}.stat" 2>/dev/null || true
-        ls -la "$file" > "$forensic_dir/${quarantine_name}.ls" 2>/dev/null || true
-        file "$file" > "$forensic_dir/${quarantine_name}.file" 2>/dev/null || true
-        sha256sum "$file" > "$forensic_dir/${quarantine_name}.sha256" 2>/dev/null || true
-        if [[ "$HAS_YARA" == true ]] && [[ -r "$file" ]]; then
-            yara -s -r "$YARA_RULES_DIR" "$file" > "$forensic_dir/${quarantine_name}.yara" 2>/dev/null || true
+        stat "$sanitized_file" > "$forensic_dir/${quarantine_name}.stat" 2>/dev/null || true
+        ls -la "$sanitized_file" > "$forensic_dir/${quarantine_name}.ls" 2>/dev/null || true
+        file "$sanitized_file" > "$forensic_dir/${quarantine_name}.file" 2>/dev/null || true
+        sha256sum "$sanitized_file" > "$forensic_dir/${quarantine_name}.sha256" 2>/dev/null || true
+        if [[ "$HAS_YARA" == true ]] && [[ -r "$sanitized_file" ]]; then
+            yara -s -r "$YARA_RULES_DIR" "$sanitized_file" > "$forensic_dir/${quarantine_name}.yara" 2>/dev/null || true
         fi
         if cmd strings; then
-            strings "$file" | head -100 > "$forensic_dir/${quarantine_name}.strings" 2>/dev/null || true
+            strings "$sanitized_file" | head -100 > "$forensic_dir/${quarantine_name}.strings" 2>/dev/null || true
         fi
         if [[ "${QUARANTINE_ENABLE-true}" == "false" ]]; then
           return
         fi
-        if mv "$file" "$QUARANTINE_DIR/$quarantine_name" 2>/dev/null; then
-            log_info "File quarantined with forensics: $file -> $QUARANTINE_DIR/$quarantine_name" 
-            touch "$file" 2>/dev/null || true
-            chmod 000 "$file" 2>/dev/null || true
+        if mv "$sanitized_file" "$QUARANTINE_DIR/$quarantine_name" 2>/dev/null; then
+            printf "File quarantined with forensics: %s -> %s\n" "$sanitized_file" "$QUARANTINE_DIR/$quarantine_name"
+            touch "$sanitized_file" 2>/dev/null || true
+            chmod 000 "$sanitized_file" 2>/dev/null || true
         else
-            log_info "Failed to quarantine file: $file"
+            printf "Failed to quarantine file: %s\n" "$sanitized_file"
         fi
     fi
 }
@@ -1587,25 +1626,25 @@ init_sentinel() {
     done
     chmod 700 "$LOG_DIR" "$BASELINE_DIR" "$ALERTS_DIR" "$QUARANTINE_DIR" "$BACKUP_DIR" "$THREAT_INTEL_DIR" "$YARA_RULES_DIR" "$SCRIPTS_DIR"
 
-            declare today=$(date +%Y%m%d)
-            declare alert_file="$ALERTS_DIR/$today.log"
+            local today=$(date +%Y%m%d)
+            local alert_file="$ALERTS_DIR/$today.log"
             printf "%s\n" "=== Ghost Sentinel v4 - $(date '+%Y-%m-%d %H:%M:%S') ===" > "$alert_file"
 
     load_config_safe
     check_dependencies
     init_json_output
     init_yara_rules
-    log_info "Initializing Ghost Sentinel v4..."
+    printf "Initializing Ghost Sentinel v4...\n"
     detect_environment
     if [[ "$IS_CONTAINER" == true ]]; then
-        log_info "Container environment detected - adjusting monitoring"
+        printf "Container environment detected - adjusting monitoring\n"
     fi
     if [[ "$IS_VM" == true ]]; then
-        log_info "Virtual machine environment detected"
+        printf "Virtual machine environment detected\n"
     fi
     update_threat_intelligence
     if [[ ! -f "$BASELINE_DIR/.initialized" ]] || [[ "${FORCE_BASELINE:-false}" == true ]]; then
-        log_info "Creating security baseline..."
+        printf "Creating security baseline...\n"
         create_baseline
         touch "$BASELINE_DIR/.initialized"
     fi
@@ -1675,7 +1714,7 @@ load_config_safe() {
     ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-true}
     WHITELIST_PROCESSES=${WHITELIST_PROCESSES:-("firefox" "chrome" "nmap" "masscan" "nuclei" "gobuster" "ffuf" "subfinder" "httpx" "amass" "burpsuite" "wireshark" "metasploit" "sqlmap" "nikto" "dirb" "wpscan" "john" "docker" "containerd" "systemd" "kthreadd" "bash" "zsh" "ssh" "python3" "yara")}
     WHITELIST_CONNECTIONS=${WHITELIST_CONNECTIONS:-("127.0.0.1" "::1" "0.0.0.0" "8.8.8.8" "1.1.1.1" "208.67.222.222" "1.0.0.1" "9.9.9.9")}
-    EXCLUDE_PATHS=${EXCLUDE_PATHS:-("/opt/metasploit-framework" "/usr/share/metasploit-framework" "/usr/share/wordlists" "/home/*/go/bin" "/tmp/nuclei-templates" "/var/lib/docker" "/var/lib/containerd" "/snap")}
+    EXCLUDE_PATHS=${EXCLUDE_PATHS:-("/opt/metasploit-framework" "/usr/share/metasploit-framework" "/usr/share/wordlists" "/home/*/go/bin" "/tmp/nuclei-templates" "/var/lib/docker" "/var/lib/containerd" "/snap" "/home/lotusrise/Documents/theProtector.go" "/tmp/go-build" "/tmp/go-build*/*/theProtector")}
     CRITICAL_PATHS=${CRITICAL_PATHS:-("/etc/passwd" "/etc/shadow" "/etc/sudoers" "/etc/ssh/sshd_config" "/etc/hosts")}
     if [[ -f "$CONFIG_FILE" ]]; then
         if source "$CONFIG_FILE" 2>/dev/null; then
@@ -1686,20 +1725,21 @@ load_config_safe() {
     fi
 }
 log_alert() {
-    declare level=$1
-    declare message="$2"
-    declare timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local level=$1
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local sanitized_message=$(printf '%s\n' "$message" | tr '\n\r' '  ' | sed 's/[^[:print:]]//g')
     case $level in
-        $CRITICAL) printf "%b\n" "${RED}[CRITICAL]${NC} $message" ;;
-        $HIGH)     printf "%b\n" "${YELLOW}[HIGH]${NC} $message" ;;
-        $MEDIUM)   printf "%b\n" "${BLUE}[MEDIUM]${NC} $message" ;;
-        $LOW)      printf "%b\n" "${GREEN}[LOW]${NC} $message" ;;
+        $CRITICAL) printf "%b\n" "${RED}[CRITICAL]${NC} $sanitized_message" ;;
+        $HIGH)     printf "%b\n" "${YELLOW}[HIGH]${NC} $sanitized_message" ;;
+        $MEDIUM)   printf "%b\n" "${BLUE}[MEDIUM]${NC} $sanitized_message" ;;
+        $LOW)      printf "%b\n" "${GREEN}[LOW]${NC} $sanitized_message" ;;
     esac
     if [[ -n "$ALERTS_DIR" ]]; then
         mkdir -p "$ALERTS_DIR" 2>/dev/null || true
-        declare alert_file="$ALERTS_DIR/$(date +%Y%m%d).log"
-        declare log_entry="[$timestamp] [LEVEL:$level] $message"
-        declare alert_hash=$(printf "%s\n" "$message" | sha256sum | cut -d' ' -f1)
+        local alert_file="$ALERTS_DIR/$(date +%Y%m%d).log"
+        local log_entry="[$timestamp] [LEVEL:$level] $sanitized_message"
+        local alert_hash=$(printf "%s\n" "$sanitized_message" | sha256sum | cut -d' ' -f1)
         
         if [[ ! -f "$alert_file.dedup" ]] || ! grep -q "$alert_hash" "$alert_file.dedup" 2>/dev/null; then
             printf "%s\n" "$log_entry" >> "$alert_file" 2>/dev/null || true
@@ -1710,16 +1750,16 @@ log_alert() {
             fi
         fi
     fi
-    json_add_alert "$level" "$message" "$timestamp"
+    json_add_alert "$level" "$sanitized_message" "$timestamp"
     if [[ "${SYSLOG_ENABLED:-false}" == true ]] && cmd logger; then
-        logger -t "ghost-sentinel[$]" -p security.alert -i "$message" 2>/dev/null || true
+        logger -t "ghost-sentinel[$]" -p security.alert -i "$sanitized_message" 2>/dev/null || true
     fi
     if [[ $level -eq $CRITICAL ]]; then
-        send_critical_alert "$message"
+        send_critical_alert "$sanitized_message"
     fi
 }
 log_info() {
-    declare timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     printf "%b\n" "${CYAN}[INFO]${NC} $1"
 
     if [[ -n "$LOG_DIR" ]]; then
@@ -1787,36 +1827,42 @@ update_threat_intelligence() {
     if [[ "$ENABLE_THREAT_INTEL" != true ]]; then
         return
     fi
-    log_info "Updating threat intelligence feeds..."
-    declare intel_file="$THREAT_INTEL_DIR/malicious_ips.txt"
-    declare intel_timestamp="$THREAT_INTEL_DIR/.last_update"
-    declare update_needed=true
+    printf "Updating threat intelligence feeds...\n"
+    local intel_file="$THREAT_INTEL_DIR/malicious_ips.txt"
+    local intel_timestamp="$THREAT_INTEL_DIR/.last_update"
+    local update_needed=true
     if [[ -f "$intel_timestamp" ]]; then
-        declare last_update=$(cat "$intel_timestamp" 2>/dev/null || printf "0\n")
-        declare current_time=$(date +%s)
-        declare age=$((current_time - last_update))
-        declare max_age=$((THREAT_INTEL_UPDATE_HOURS * 3600))
+        local last_update=$(cat "$intel_timestamp" 2>/dev/null || printf "0\n")
+        local current_time=$(date +%s)
+        local age=$((current_time - last_update))
+        local max_age=$((THREAT_INTEL_UPDATE_HOURS * 3600))
 
         if [[ $age -lt $max_age ]]; then
             update_needed=false
         fi
     fi
     if [[ "$update_needed" == true ]]; then
-        declare temp_file=$(mktemp)
+        local temp_file=$(mktemp)
+        local sig_file="${temp_file}.sig"
         if cmd curl; then
-            if curl -s --max-time 30 -o "$temp_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" 2>/dev/null; then
-                
+            if curl -s --max-time 30 -o "$temp_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" 2>/dev/null && \
+               curl -s --max-time 10 -o "$sig_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset.asc" 2>/dev/null; then
                 if [[ -s "$temp_file" ]] && [[ $(grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" "$temp_file" | wc -l) -gt 100 ]]; then
-                    mv "$temp_file" "$intel_file"
-                    printf "%s\n" "$(date +%s)" > "$intel_timestamp"
-                    log_info "Threat intelligence updated successfully ($(wc -l < "$intel_file" 2>/dev/null || printf "0\n") entries)"
+                    if verify_gpg_signature "$temp_file" "$sig_file" "8F87F3B1"; then
+                        mv "$temp_file" "$intel_file"
+                        printf "%s\n" "$(date +%s)" > "$intel_timestamp"
+                        printf "Threat intelligence updated successfully (%s entries)\n" "$(wc -l < "$intel_file" 2>/dev/null || printf "0\n")"
+                    else
+                        printf "Threat intelligence signature verification failed\n"
+                        rm -f "$temp_file" "$sig_file"
+                    fi
                 else
-                    rm -f "$temp_file"
-                    log_info "Threat intelligence update failed - validation failed"
+                    rm -f "$temp_file" "$sig_file"
+                    printf "Threat intelligence update failed - validation failed\n"
                 fi
             else
-                rm -f "$temp_file"
-                log_info "Threat intelligence update failed - network error"
+                rm -f "$temp_file" "$sig_file"
+                printf "Threat intelligence update failed - network error\n"
             fi
         fi
     fi
@@ -1945,9 +1991,9 @@ create_baseline() {
 
 #=====Main Enhanced Function=====#
 main_enhanced() {
-    declare start_time=$(date +%s)
+    local start_time=$(date +%s)
 
-    log_info "Ghost Sentinel v4 Enhanced - Starting advanced security scan..."
+    printf "Ghost Sentinel v4 Enhanced - Starting advanced security scan...\n"
     json_set "$JSON_OUTPUT_FILE" ".scan_start" "$(date -Iseconds)"
     json_set "$JSON_OUTPUT_FILE" ".hostname" "$(hostname)"
     json_set "$JSON_OUTPUT_FILE" ".environment.user" "$USER"
@@ -1959,7 +2005,8 @@ main_enhanced() {
     json_set "$JSON_OUTPUT_FILE" ".environment.has_bcc" "$HAS_BCC"
     json_set "$JSON_OUTPUT_FILE" ".environment.has_netcat" "$HAS_NETCAT"
     init_sentinel
-    declare features_enabled=()
+    monitor_resources
+    local features_enabled=()
 
     if [[ "$ENABLE_EBPF" == true ]] && [[ "$HAS_BCC" == true ]] && [[ $EUID -eq 0 ]]; then
         start_ebpf_monitoring
@@ -1975,47 +2022,49 @@ main_enhanced() {
         features_enabled+=("yara")
         json_set "$JSON_OUTPUT_FILE" ".features.yara_scanning" "true"
     fi
-    declare modules_run=()
+    local modules_run=()
     if [[ "$ENABLE_ANTI_EVASION" == true ]]; then
-        log_info "Running anti-evasion detection..."
+        printf "Running anti-evasion detection...\n"
         if detect_anti_evasion; then
             modules_run+=("anti-evasion")
         fi
     fi
-    log_info "Running network monitoring..."
+    monitor_resources
+    printf "Running network monitoring...\n"
     if monitor_network_advanced; then
         modules_run+=("network")
     fi
     if [[ "$HAS_YARA" == true ]]; then
-        log_info "Running file monitoring with YARA..."
+        printf "Running file monitoring with YARA...\n"
         if monitor_files_with_yara; then
             modules_run+=("files-yara")
         fi
     fi
-    log_info "Running process monitoring..."
+    monitor_resources
+    printf "Running process monitoring...\n"
     if monitor_processes; then
         modules_run+=("processes")
     fi
-    log_info "Running user monitoring..."
+    printf "Running user monitoring...\n"
     if monitor_users; then
         modules_run+=("users")
     fi
-    log_info "Running rootkit detection..."
+    printf "Running rootkit detection...\n"
     if monitor_rootkits; then
         modules_run+=("rootkits")
     fi
-    log_info "Running memory monitoring..."
+    printf "Running memory monitoring...\n"
     if monitor_memory; then
         modules_run+=("memory")
     fi
-    declare end_time=$(date +%s)
-    declare duration=$((end_time - start_time))
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
     json_set "$JSON_OUTPUT_FILE" ".scan_end" "$(date -Iseconds)"
     json_set "$JSON_OUTPUT_FILE" ".performance.scan_duration" "$duration"
     generate_enhanced_summary "$duration" "${modules_run[@]}"
-    log_info "Advanced security scan completed in ${duration}s"
+    printf "Advanced security scan completed in %ss\n" "$duration"
     if [[ ${#features_enabled[@]} -gt 0 ]]; then
-        log_info "Advanced features active: ${features_enabled[*]}"
+        printf "Advanced features active: %s\n" "${features_enabled[*]}"
     fi
 }
 
@@ -2100,6 +2149,7 @@ fi
     fi
 }
 monitor_network() { monitor_network_advanced; }
+monitor_memory() { monitor_resources; }
 monitor_processes() {
     if [[ "$MONITOR_PROCESSES" != true ]]; then return; fi
     log_info "Basic process monitoring..."
@@ -2155,26 +2205,24 @@ monitor_rootkits() {
 }
 
 #=====Memory Monitoring=====#
-monitor_memory() {
-    if [[ "$MONITOR_MEMORY" != true ]]; then return; fi
-    log_info "Basic memory monitoring..."
-
-    ps aux --sort=-%mem --no-headers 2>/dev/null | head -3 | while read line; do
-        declare mem_usage=$(printf "%s\n" "$line" | awk '{print $4}' | tr -d '\n\r')
-        declare proc_name=$(printf "%s\n" "$line" | awk '{print $11}' | xargs basename 2>/dev/null)
-        declare pid=$(printf "%s\n" "$line" | awk '{print $2}')
-
-        if ! is_whitelisted_process "$proc_name"; then
-            if [[ -n "$mem_usage" ]] && [[ "$mem_usage" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(printf "%s > 80\n" "$mem_usage" | bc -l 2>/dev/null || printf "0\n") )); then
-                log_alert $MEDIUM "High memory usage: $proc_name (PID: $pid, MEM: $mem_usage%)"
-            fi
-        fi
-    done
+monitor_resources() {
+    local mem_usage=$(ps -o pmem= -p $$ 2>/dev/null | tr -d ' ' || printf "0\n")
+    local cpu_usage=$(ps -o pcpu= -p $$ 2>/dev/null | tr -d ' ' || printf "0\n")
+    local mem_limit=80
+    local cpu_limit=50
+    if [[ -n "$mem_usage" ]] && [[ "$mem_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(printf "%.0f" "$mem_usage") > mem_limit )); then
+        printf "High memory usage detected: %s%% - terminating\n" "$mem_usage"
+        exit 1
+    fi
+    if [[ -n "$cpu_usage" ]] && [[ "$cpu_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(printf "%.0f" "$cpu_usage") > cpu_limit )); then
+        printf "High CPU usage detected: %s%% - terminating\n" "$cpu_usage"
+        exit 1
+    fi
 }
 
 #=====Main Function=====#
 main() {
-    log_info "Ghost Sentinel v4 starting security scan..."
+    printf "Ghost Sentinel v4 starting security scan...\n"
     init_sentinel
     monitor_network
     monitor_processes
@@ -2182,9 +2230,9 @@ main() {
     monitor_users
     monitor_rootkits
     monitor_memory
-    log_info "Security scan completed"
-    declare today=$(date +%Y%m%d)
-    declare alert_count=$(grep -c "^\[" "$ALERTS_DIR/$today.log" 2>/dev/null)
+    printf "Security scan completed\n"
+    local today=$(date +%Y%m%d)
+    local alert_count=$(grep -c "^\[" "$ALERTS_DIR/$today.log" 2>/dev/null)
     alert_count=${alert_count:-0}
 
     if (( alert_count > 0 )); then
@@ -2195,24 +2243,7 @@ main() {
     fi
 }
 install_cron() {
-    declare cron_entry="* * * * * for i in {0..3}; do $SCRIPT_DIR/$SCRIPT_NAME >/dev/null 2>&1; sleep 15; done"
-    if cmd crontab; then
-        if ! crontab -l 2>/dev/null | grep -q "ghost_sentinel"; then
-            (crontab -l 2>/dev/null; printf "%s\n" "$cron_entry") | crontab - 2>/dev/null || {
-                printf "%s\n" "Failed to install cron job - check permissions"
-                return 1
-            }
-            log_info "Ghost Sentinel installed to run every 15 seconds via cron"
-        else
-            log_info "Ghost Sentinel cron job already exists"
-        fi
-    else
-        printf "%s\n" "crontab not available - manual scheduling required"
-        return 1
-    fi
-    if cmd systemctl; then
-        create_systemd_service
-    fi
+    printf "%s\n" "Cron installation removed - use 'loop' mode for continuous monitoring"
 }
 create_systemd_service() {
     declare systemd_args=""
@@ -2253,10 +2284,9 @@ EOF
 }
 
 # === MAIN EXECUTION ===
-acquire_lock
 case "${1:-run}" in
 "install")
-    install_cron
+    printf "%s\n" "Installation mode removed - use 'loop' for continuous monitoring"
     ;;
 "baseline")
     FORCE_BASELINE=true
@@ -2310,6 +2340,7 @@ case "${1:-run}" in
     printf "%b\n" "${CYAN}JSON: $JSON_OUTPUT_FILE${NC}"
     ;;
 "enhanced"|"v2"|"v3")
+    acquire_lock
     main_enhanced
     ;;
 "performance")
@@ -2366,7 +2397,7 @@ case "${1:-run}" in
         printf "%s\n" "✓ Fixed hostname resolution"
     fi
     printf "%b\n" "${GREEN}✓ Cleanup completed - all issues resolved${NC}"
-    printf "%s\n" "You can now run: sudo ./theprotector.sh test"
+    printf "%s\n" "You can now run: sudo ./theProtectorV4.sh test"
     ;;
 "status")
     printf "%s\n" "Ghost Sentinel v4 Status:"
@@ -2417,8 +2448,14 @@ case "${1:-run}" in
 "dashboard")
     printf "%s\n" "Starting Ghost Sentinel Dashboard..."
     printf "%s\n" "===================================="
-    if [[ ! -f "theProtector.go" ]]; then
-        printf "%b\n" "${RED}✗ Dashboard file 'theProtector.go' not found in current directory${NC}"
+    SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+    if command -v readlink >/dev/null 2>&1; then
+        SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" >/dev/null 2>&1 && pwd -P)"
+    GO_FILE="$SCRIPT_DIR/theProtector.go"
+    if [[ ! -f "$GO_FILE" ]]; then
+        printf "%b\n" "${RED}✗ Dashboard file 'theProtector.go' not found in script directory: $SCRIPT_DIR${NC}"
         printf "%s\n" "Please ensure theProtector.go is in the same directory as theProtectorV4.sh"
         exit 1
     fi
@@ -2429,9 +2466,46 @@ case "${1:-run}" in
     printf "%b\n" "${GREEN}✓ Starting dashboard on http://localhost:8082${NC}"
     printf "%s\n" "Press Ctrl+C to stop the dashboard"
     printf "\n"
-    go run theProtector.go
+    go run "$GO_FILE"
+    ;;
+"loop")
+    printf "%s\n" "Starting Ghost Sentinel in continuous monitoring mode..."
+    printf "%s\n" "Scans will run with randomized intervals (1-5 minutes). Press Ctrl+C to stop."
+    printf "%s\n" "======================================================"
+    while true; do
+        # Check if lock exists and if the process is actually running
+        if [[ -f "$LOCK_FILE" ]]; then
+            lock_pid=""
+            if [[ -f "$PID_FILE" ]]; then
+                lock_pid=$(cat "$PID_FILE" 2>/dev/null || printf "\n")
+            fi
+            if [[ -n "$lock_pid" ]]; then
+                # Check if it's actually a scan process by looking at command line first
+                if ps -p "$lock_pid" -o cmd= 2>/dev/null | grep -q "theProtectorV4.sh"; then
+                    printf "%s\n" "$(date): Waiting for previous scan to complete (PID: $lock_pid)..."
+                    sleep 30
+                    continue
+                else
+                    printf "%s\n" "$(date): Stale lock detected (PID $lock_pid is not a scan process or doesn't exist), removing..."
+                    rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+                fi
+            else
+                printf "%s\n" "$(date): Empty PID file, removing lock files..."
+                rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+            fi
+        fi
+        
+        printf "%s\n" "$(date): Starting scheduled scan..."
+        acquire_lock
+        main_enhanced
+        sleep_minutes=$((RANDOM % 5 + 1))
+        sleep_seconds=$((sleep_minutes * 60))
+        printf "%s\n" "$(date): Scan completed. Sleeping for $sleep_minutes minutes ($sleep_seconds seconds)..."
+        sleep $sleep_seconds
+    done
     ;;
 *)
+    acquire_lock
     main
     ;;
 esac

@@ -50,7 +50,7 @@ type DashboardData struct {
 var (
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			return true // Allow connections from any origin in development
+			return true 
 		},
 	}
 	clients   = make(map[*websocket.Conn]bool)
@@ -60,27 +60,25 @@ var (
 )
 
 func main() {
-	// Initialize stats slice
+	
 	stats = make([]SystemStats, 0, 100)
 
-	// Start background monitoring
+	
 	go monitorSystemStats()
 
-	// Setup routes
+
 	http.HandleFunc("/", dashboardHandler)
 	http.HandleFunc("/api/stats", statsAPIHandler)
 	http.HandleFunc("/api/security", securityAPIHandler)
 	http.HandleFunc("/api/run-scan", runScanHandler)
 	http.HandleFunc("/ws", wsHandler)
-	// Removed static file serving to prevent path traversal vulnerabilities
 
-	// Silent startup - no console output for security
-	log.SetOutput(os.Stderr) // Redirect logs to stderr, not stdout
+	log.SetOutput(os.Stderr) 
 	log.Fatal(http.ListenAndServe(":8082", nil))
 }
 
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
-	// Embedded HTML template to avoid file system dependencies
+	
 	dashboardHTML := `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -324,10 +322,15 @@ func runScanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start scan in background without exposing output for security
+	
 	go func() {
-		cmd := exec.Command("./theProtectorV4.sh", "enhanced")
-		cmd.Run() // Discard output for security
+		cmd := exec.Command("sudo", "theProtectorV4.sh", "enhanced")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("Error running scan script: %v, output: %s", err, string(output))
+		} else {
+			log.Printf("Scan script completed successfully")
+		}
 	}()
 
 	response := map[string]interface{}{
@@ -338,11 +341,11 @@ func runScanHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
-// WebSocket handler - minimal logging for security
+
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		// Silent failure for security
+	
 		return
 	}
 
@@ -412,7 +415,7 @@ func getSystemStats() SystemStats {
 }
 
 func getCPUUsage() float64 {
-	cmd := exec.Command("bash", "-c", "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'")
+	cmd := exec.Command("sh", "-c", "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0
@@ -427,7 +430,7 @@ func getCPUUsage() float64 {
 }
 
 func getMemoryUsage() float64 {
-	cmd := exec.Command("bash", "-c", "free | grep Mem | awk '{printf \"%.2f\", $3/$2 * 100.0}'")
+	cmd := exec.Command("sh", "-c", "free | grep Mem | awk '{printf \"%.2f\", $3/$2 * 100.0}'")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0
@@ -442,7 +445,7 @@ func getMemoryUsage() float64 {
 }
 
 func getDiskUsage() float64 {
-	cmd := exec.Command("bash", "-c", "df / | tail -1 | awk '{print $5}' | sed 's/%//'")
+	cmd := exec.Command("sh", "-c", "df / | tail -1 | awk '{print $5}' | sed 's/%//'")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0
@@ -458,45 +461,38 @@ func getDiskUsage() float64 {
 
 func getSecurityStatus() SecurityStatus {
 
-	scriptPath := "./theProtectorV4.sh"
+	scriptPath := "theProtectorV4.sh"
 	status := SecurityStatus{
 		LastScan: time.Now().Format("2006-01-02 15:04:05"),
 	}
 
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+	if _, err := exec.LookPath(scriptPath); err != nil {
+		log.Printf("Scan script %s not found in PATH", scriptPath)
 		return status
 	}
 
-
-	jsonFile := os.Getenv("HOME") + "/.ghost-sentinel/logs/latest_scan.json"
-	if _, err := os.Stat(jsonFile); os.IsNotExist(err) {
-		// Fallback to system log directory
-		jsonFile = "/var/log/ghost-sentinel/latest_scan.json"
-	}
-	if data, err := os.ReadFile(jsonFile); err == nil {
+	jsonFile := "/var/lib/ghost-sentinel/logs/latest_scan.json"
+	if data, err := os.ReadFile(jsonFile); err != nil {
+		log.Printf("Failed to read JSON file %s: %v", jsonFile, err)
+	} else {
 		var jsonData map[string]interface{}
-		if json.Unmarshal(data, &jsonData) == nil {
+		if json.Unmarshal(data, &jsonData) != nil {
+			log.Printf("Failed to unmarshal JSON from %s", jsonFile)
+		} else {
 			if features, ok := jsonData["features"].(map[string]interface{}); ok {
-				if ebpf, ok := features["ebpf_monitoring"].(string); ok {
-					status.EBPFMonitoring = ebpf == "true"
+				if v, ok := features["ebpf_monitoring"]; ok {
+					status.EBPFMonitoring = parseBoolFlexible(v)
 				}
-				if honeypots, ok := features["honeypots"].(string); ok {
-					status.NetworkHoneypots = honeypots == "true"
+				if v, ok := features["honeypots"]; ok {
+					status.NetworkHoneypots = parseBoolFlexible(v)
 				}
-				if yara, ok := features["yara_scanning"].(string); ok {
-					status.YARAMalware = yara == "true"
-				}
-				if api, ok := features["api_server"].(string); ok {
-					status.APIInterface = api == "true"
+				if v, ok := features["yara_scanning"]; ok {
+					status.YARAMalware = parseBoolFlexible(v)
 				}
 			}
-		
-			status.AntiEvasion = checkAntiEvasionEnabled(jsonData)
-			status.ThreatIntel = checkThreatIntelEnabled(jsonData)
 			status.ForensicEnabled = checkForensicsEnabled(jsonData)
 		}
 	}
-
 
 	if !status.EBPFMonitoring {
 		status.EBPFMonitoring = checkProcessRunning("ebpf_monitor")
@@ -508,10 +504,7 @@ func getSecurityStatus() SecurityStatus {
 		status.YARAMalware = checkCommandAvailable("yara")
 	}
 
-	// Check for container support
 	status.ContainerSupport = checkContainerEnvironment()
-
-	// Get active alerts
 	status.ActiveAlerts = getActiveAlerts()
 
 	return status
@@ -523,12 +516,20 @@ func checkProcessRunning(processName string) bool {
 }
 
 func checkHoneypotsRunning() bool {
-	
-	logsDir := os.Getenv("HOME") + "/.ghost-sentinel/logs"
-	if _, err := os.Stat(logsDir + "/honeypot.pids"); os.IsNotExist(err) {
-		return false
+	candidates := []string{
+		"/var/lib/ghost-sentinel/logs/honeypot.pids",
+		"/var/lib/ghost-sentinel/logs/honeypot.pid",
+		os.Getenv("HOME") + "/.ghost-sentinel/logs/honeypot.pids",
+		os.Getenv("HOME") + "/.ghost-sentinel/logs/honeypot.pid",
+		"/var/log/ghost-sentinel/honeypot.pids",
+		"/var/log/ghost-sentinel/honeypot.pid",
 	}
-	return true
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func checkCommandAvailable(cmd string) bool {
@@ -536,8 +537,23 @@ func checkCommandAvailable(cmd string) bool {
 	return err == nil
 }
 
+func parseBoolFlexible(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		s := strings.ToLower(strings.TrimSpace(t))
+		return s == "true" || s == "1" || s == "yes" || s == "on"
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	default:
+		return false
+	}
+}
+
 func checkContainerEnvironment() bool {
-	
 	indicators := []string{
 		"/.dockerenv",
 		"/run/.containerenv",
@@ -553,74 +569,37 @@ func checkContainerEnvironment() bool {
 	return false
 }
 
-func checkThreatIntelFiles() bool {
-	threatFiles := []string{
-		os.Getenv("HOME") + "/.ghost-sentinel/logs/threat_intel/malicious_ips.txt",
-		os.Getenv("HOME") + "/.ghost-sentinel/logs/threat_intel/.last_update",
-	}
-
-	for _, file := range threatFiles {
-		if _, err := os.Stat(file); os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
-}
-
-func checkAntiEvasionEnabled(jsonData map[string]interface{}) bool {
-	if features, ok := jsonData["features"].(map[string]interface{}); ok {
-		if antiEvasion, ok := features["anti_evasion"].(string); ok {
-			return antiEvasion == "true"
-		}
-	}
-	if env, ok := jsonData["environment"].(map[string]interface{}); ok {
-		if antiEvasion, ok := env["anti_evasion"].(string); ok {
-			return antiEvasion == "true"
-		}
-	}
-	return false
-}
-
-func checkThreatIntelEnabled(jsonData map[string]interface{}) bool {
-	if features, ok := jsonData["features"].(map[string]interface{}); ok {
-		if threatIntel, ok := features["threat_intelligence"].(string); ok {
-			return threatIntel == "true"
-		}
-	}
-	if env, ok := jsonData["environment"].(map[string]interface{}); ok {
-		if threatIntel, ok := env["threat_intel"].(string); ok {
-			return threatIntel == "true"
-		}
-	}
-	return checkThreatIntelFiles()
-}
-
 func checkForensicsEnabled(jsonData map[string]interface{}) bool {
 	if features, ok := jsonData["features"].(map[string]interface{}); ok {
 		if forensics, ok := features["forensic_analysis"].(string); ok {
 			return forensics == "true"
 		}
 	}
-	if env, ok := jsonData["environment"].(map[string]interface{}); ok {
-		if forensics, ok := env["forensics"].(string); ok {
-			return forensics == "true"
+	// Check for quarantine directory
+	quarantineCandidates := []string{
+		"/var/lib/ghost-sentinel/logs/quarantine",
+		os.Getenv("HOME") + "/.ghost-sentinel/logs/quarantine",
+		"/var/log/ghost-sentinel/quarantine",
+	}
+	for _, q := range quarantineCandidates {
+		if _, err := os.Stat(q); err == nil {
+			return true
 		}
 	}
-	// Check for quarantine directory
-	if _, err := os.Stat(os.Getenv("HOME") + "/.ghost-sentinel/logs/quarantine"); os.IsNotExist(err) {
-		return false
-	}
-	return true
+	return false
 }
 
 func getActiveAlerts() []Alert {
 	alerts := []Alert{}
 
 	// Check alert files --- Keep it Simple ---
-	alertDir := os.Getenv("HOME") + "/.ghost-sentinel/logs/alerts"
+	// Prefer distro-installed alerts dir, then user, then /var/log
+	alertDir := "/var/lib/ghost-sentinel/logs/alerts"
 	if _, err := os.Stat(alertDir); os.IsNotExist(err) {
-		// Fallback to system log directory
-		alertDir = "/var/log/ghost-sentinel/alerts"
+		alertDir = os.Getenv("HOME") + "/.ghost-sentinel/logs/alerts"
+		if _, err := os.Stat(alertDir); os.IsNotExist(err) {
+			alertDir = "/var/log/ghost-sentinel/alerts"
+		}
 	}
 	if _, err := os.Stat(alertDir); os.IsNotExist(err) {
 		return alerts

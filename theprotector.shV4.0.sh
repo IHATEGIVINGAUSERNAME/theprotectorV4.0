@@ -29,13 +29,6 @@ YARA_RULES_DIR="$LOG_DIR/yara_rules"
 SCRIPTS_DIR="$LOG_DIR/scripts"
 HONEYPOT_LOG="$LOG_DIR/honeypot.log"
 EBPF_LOG="$LOG_DIR/ebpf_events.log"
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
 CRITICAL=1
 HIGH=2
 MEDIUM=3
@@ -777,6 +770,7 @@ class EnterpriseEBPFMonitor:
             # Example: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
             # Add actual hashes for trusted binaries here
         }
+        self.whitelisted_files = set()
         self.suspicious_patterns = {
             'exec': [
                 b'/dev/tcp', b'python -c', b'perl -e', b'bash -i', b'sh -i', b'base64 -d',
@@ -822,6 +816,14 @@ class EnterpriseEBPFMonitor:
             f.write(json.dumps(alert) + '\n')  
         if severity == 'CRITICAL':
             print(f"[CRITICAL] {message}")
+
+def save_whitelisted_files():
+    try:
+        with open('$LOG_DIR/whitelisted_files.txt', 'w') as f:
+            for file in monitor.whitelisted_files:
+                f.write(file + '\n')
+    except:
+        pass
 
 bpf_text = """
 
@@ -1024,6 +1026,9 @@ def print_file_event(cpu, data, size):
     filename = event.filename.decode('utf-8', 'replace')
     comm = event.comm.decode('utf-8', 'replace')
     
+    write_flags = [1, 2, 64, 65, 66, 577, 578, 1089, 1090]
+    is_write = any(event.flags & flag for flag in write_flags)
+    
     whitelisted, hashval = monitor.is_whitelisted_process(comm, event.pid)
     if whitelisted:
         forensic = {
@@ -1036,6 +1041,8 @@ def print_file_event(cpu, data, size):
         }
         with open('$LOG_DIR/ebpf_forensics.jsonl', 'a') as f:
             f.write(json.dumps(forensic) + '\n')
+        if is_write:
+            monitor.whitelisted_files.add(filename)
         return
     
     if filename.startswith(('/proc/', '/sys/', '/dev/pts/', '/tmp/.')):
@@ -1046,9 +1053,6 @@ def print_file_event(cpu, data, size):
         '/root/.ssh', '/home/.ssh', '/etc/rc.local', '/etc/hosts',
         '/etc/fstab', '/boot/', '/etc/systemd/system/'
     ]
-    
-    write_flags = [1, 2, 64, 65, 66, 577, 578, 1089, 1090]
-    is_write = any(event.flags & flag for flag in write_flags)
     
     for sensitive in sensitive_files:
         if sensitive in filename and is_write:
@@ -1063,10 +1067,15 @@ try:
     b["network_events"].open_perf_buffer(print_network_event)
     b["file_events"].open_perf_buffer(print_file_event)
     print("Enterprise eBPF monitoring started...")
+    counter = 0
     while True:
         try:
             b.perf_buffer_poll()
+            counter += 1
+            if counter % 1000 == 0:
+                save_whitelisted_files()
         except KeyboardInterrupt:
+            save_whitelisted_files()
             print("\nStopping eBPF monitoring...")
             break
 except Exception as e:
@@ -1546,18 +1555,26 @@ monitor_network_advanced() {
 monitor_files_with_yara() {
     if [[ "$MONITOR_FILES" != true ]]; then return; fi
     log_info "File monitoring with YARA malware detection..."
+    declare whitelisted_files_file="$LOG_DIR/whitelisted_files.txt"
+    declare whitelisted_files=()
+    if [[ -f "$whitelisted_files_file" ]]; then
+        mapfile -t whitelisted_files < "$whitelisted_files_file"
+    fi
     declare scan_locations=("/tmp" "/var/tmp" "/dev/shm")
     for location in "${scan_locations[@]}"; do
         if [[ -d "$location" ]] && [[ -r "$location" ]]; then
             find "$location" -type f 2>/dev/null | while read -r file; do
                 local excluded=false
                 for exclude_path in "${EXCLUDE_PATHS[@]}"; do
-                    if [[ "$file" == $exclude_path* ]]; then
+                    if [[ "$file" == $exclude_path ]]; then
                         excluded=true
                         break
                     fi
                 done
                 if [[ "$excluded" == true ]]; then
+                    continue
+                fi
+                if [[ " ${whitelisted_files[*]} " == *" $file "* ]]; then
                     continue
                 fi
                 if [[ "$HAS_YARA" == true ]]; then
@@ -1619,7 +1636,7 @@ init_sentinel() {
     for dir in "$LOG_DIR" "$BASELINE_DIR" "$ALERTS_DIR" "$QUARANTINE_DIR" "$BACKUP_DIR" "$THREAT_INTEL_DIR" "$YARA_RULES_DIR" "$SCRIPTS_DIR"; do
         if ! mkdir -p "$dir" 2>/dev/null; then
            
-            printf "%b\n" "${RED}[ERROR]${NC} Cannot create directory: $dir"
+            printf "%b\n" "[ERROR] Cannot create directory: $dir"
             printf "%s\n" "Please run as root or ensure write permissions"
             exit 1
         fi
@@ -1652,7 +1669,7 @@ init_sentinel() {
 init_json_output() {
     cat > "$JSON_OUTPUT_FILE" << 'EOF'
 {
-  "version": "2.3",
+  "version": "4.0",
   "scan_start": "",
   "scan_end": "",
   "hostname": "",
@@ -1712,9 +1729,9 @@ load_config_safe() {
     SYSLOG_ENABLED=${SYSLOG_ENABLED:-true}
     PERFORMANCE_MODE=${PERFORMANCE_MODE:-false}
     ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-true}
-    WHITELIST_PROCESSES=${WHITELIST_PROCESSES:-("firefox" "chrome" "nmap" "masscan" "nuclei" "gobuster" "ffuf" "subfinder" "httpx" "amass" "burpsuite" "wireshark" "metasploit" "sqlmap" "nikto" "dirb" "wpscan" "john" "docker" "containerd" "systemd" "kthreadd" "bash" "zsh" "ssh" "python3" "yara")}
+    WHITELIST_PROCESSES=${WHITELIST_PROCESSES:-("firefox" "chrome" "docker" "containerd" "systemd" "kthreadd" "bash" "zsh" "ssh" "python3" "yara" "go" "golang" "gcc" "make" "curl" "wget" "nc" "netcat" "socat" "telnet" "ftp" "scp" "rsync" "java" "perl" "ruby")}
     WHITELIST_CONNECTIONS=${WHITELIST_CONNECTIONS:-("127.0.0.1" "::1" "0.0.0.0" "8.8.8.8" "1.1.1.1" "208.67.222.222" "1.0.0.1" "9.9.9.9")}
-    EXCLUDE_PATHS=${EXCLUDE_PATHS:-("/opt/metasploit-framework" "/usr/share/metasploit-framework" "/usr/share/wordlists" "/home/*/go/bin" "/tmp/nuclei-templates" "/var/lib/docker" "/var/lib/containerd" "/snap" "/home/lotusrise/Documents/theProtector.go" "/tmp/go-build" "/tmp/go-build*/*/theProtector")}
+    EXCLUDE_PATHS=${EXCLUDE_PATHS:-("/opt/metasploit-framework" "/usr/share/metasploit-framework" "/usr/share/wordlists" "/home/*/go/bin" "/tmp/nuclei-templates" "/var/lib/docker" "/var/lib/containerd" "/snap" "/home/lotusrise/Documents/theProtector.go" "/tmp/go-build" "/tmp/go-build*" "/tmp/go-build*/*/theProtector" "$SCRIPT_PATH" "/home/lotusrise/Documents/*.go" "/tmp/theProtector*")}
     CRITICAL_PATHS=${CRITICAL_PATHS:-("/etc/passwd" "/etc/shadow" "/etc/sudoers" "/etc/ssh/sshd_config" "/etc/hosts")}
     if [[ -f "$CONFIG_FILE" ]]; then
         if source "$CONFIG_FILE" 2>/dev/null; then
@@ -1730,10 +1747,10 @@ log_alert() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local sanitized_message=$(printf '%s\n' "$message" | tr '\n\r' '  ' | sed 's/[^[:print:]]//g')
     case $level in
-        $CRITICAL) printf "%b\n" "${RED}[CRITICAL]${NC} $sanitized_message" ;;
-        $HIGH)     printf "%b\n" "${YELLOW}[HIGH]${NC} $sanitized_message" ;;
-        $MEDIUM)   printf "%b\n" "${BLUE}[MEDIUM]${NC} $sanitized_message" ;;
-        $LOW)      printf "%b\n" "${GREEN}[LOW]${NC} $sanitized_message" ;;
+        $CRITICAL) printf "%b\n" "[CRITICAL] $sanitized_message" ;;
+        $HIGH)     printf "%b\n" "[HIGH] $sanitized_message" ;;
+        $MEDIUM)   printf "%b\n" "[MEDIUM] $sanitized_message" ;;
+        $LOW)      printf "%b\n" "[LOW] $sanitized_message" ;;
     esac
     if [[ -n "$ALERTS_DIR" ]]; then
         mkdir -p "$ALERTS_DIR" 2>/dev/null || true
@@ -1760,7 +1777,7 @@ log_alert() {
 }
 log_info() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    printf "%b\n" "${CYAN}[INFO]${NC} $1"
+    printf "%b\n" "[INFO] $1"
 
     if [[ -n "$LOG_DIR" ]]; then
         mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -2103,18 +2120,18 @@ low_count=${low_count:-0}
 low_count=${low_count//[^0-9]/}
 low_count=$(( low_count + 0 )) 2>/dev/null || low_count=0
     printf "\n"
-    printf "%b\n" "${CYAN}=== GHOST SENTINEL v4 ADVANCED SECURITY SUMMARY ===${NC}"
-    printf "%b\n" "${YELLOW}Scan Duration: ${duration}s${NC}"
-    printf "%b\n" "${YELLOW}Modules Run: ${#modules_run[@]} (${modules_run[*]})${NC}"
-    printf "%b\n" "${YELLOW}Total Alerts: $alert_count${NC}"
-    printf "%b\n" "${RED}Critical: $critical_count${NC}"
-    printf "%b\n" "${YELLOW}High: $high_count${NC}"
-    printf "%b\n" "${BLUE}Medium: $medium_count${NC}"
-    printf "%b\n" "${GREEN}Low: $low_count${NC}"
-    printf "%b\n" "${BLUE}Environment: Container=$IS_CONTAINER, VM=$IS_VM${NC}"
-    printf "%b\n" "${BLUE}Capabilities: YARA=$HAS_YARA, eBPF=$HAS_BCC, jq=$HAS_JQ${NC}"
-    printf "%b\n" "${CYAN}Logs: $LOG_DIR${NC}"
-    printf "%b\n" "${CYAN}JSON Output: $JSON_OUTPUT_FILE${NC}"
+    printf "%b\n" "=== GHOST SENTINEL v4 ADVANCED SECURITY SUMMARY ==="
+    printf "%b\n" "Scan Duration: ${duration}s"
+    printf "%b\n" "Modules Run: ${#modules_run[@]} (${modules_run[*]})"
+    printf "%b\n" "Total Alerts: $alert_count"
+    printf "%b\n" "Critical: $critical_count"
+    printf "%b\n" "High: $high_count"
+    printf "%b\n" "Medium: $medium_count"
+    printf "%b\n" "Low: $low_count"
+    printf "%b\n" "Environment: Container=$IS_CONTAINER, VM=$IS_VM"
+    printf "%b\n" "Capabilities: YARA=$HAS_YARA, eBPF=$HAS_BCC, jq=$HAS_JQ"
+    printf "%b\n" "Logs: $LOG_DIR"
+    printf "%b\n" "JSON Output: $JSON_OUTPUT_FILE"
     declare active_features=()
     if [[ -f "$LOG_DIR/ebpf_monitor.pid" ]]; then
         active_features+=("eBPF Monitoring")
@@ -2123,29 +2140,29 @@ low_count=$(( low_count + 0 )) 2>/dev/null || low_count=0
         active_features+=("Honeypots")
     fi
     if [[ ${#active_features[@]} -gt 0 ]]; then
-        printf "%b\n" "${PURPLE}Active Features: ${active_features[*]}${NC}"
+        printf "%b\n" "Active Features: ${active_features[*]}"
     fi
 if (( critical_count > 0 )) || (( high_count > 0 )); then
-    printf "%b\n" "\n${RED}Priority Alerts:${NC}"
+    printf "%b\n" "\nPriority Alerts:"
     while read line; do
         level=$(printf "%s\n" "$line" | grep -o "\[LEVEL:[0-9]\]" | grep -o "[0-9]")
         msg=$(printf "%s\n" "$line" | cut -d']' -f3- | sed 's/^ *//')
         if [[ "$level" == "1" ]]; then
-            printf "%b\n" "${RED}   CRITICAL: $msg${NC}"
+            printf "%b\n" "   CRITICAL: $msg"
         else
-            printf "%b\n" "${YELLOW}   HIGH: $msg${NC}"
+            printf "%b\n" "   HIGH: $msg"
         fi
     done < <(grep -E "(CRITICAL|HIGH)" "$alert_file" 2>/dev/null | tail -5)
 else
-    printf "%b\n" "${GREEN}✓ No critical threats detected${NC}"
+    printf "%b\n" "✓ No critical threats detected"
 fi
     declare baseline_age=0
     if [[ -f "$BASELINE_DIR/.initialized" ]]; then
         baseline_age=$(( ($(date +%s) - $(stat -c %Y "$BASELINE_DIR/.initialized" 2>/dev/null || printf "%s\n" "$(date +%s)")) / 86400 ))
     fi
-    printf "%b\n" "${CYAN}Baseline Age: $baseline_age days${NC}"
+    printf "%b\n" "Baseline Age: $baseline_age days"
     if (( baseline_age > 30 )); then
-        printf "%b\n" "${YELLOW}  Consider updating baseline (run with 'baseline' option)${NC}"
+        printf "%b\n" "  Consider updating baseline (run with 'baseline' option)"
     fi
 }
 monitor_network() { monitor_network_advanced; }
@@ -2236,10 +2253,10 @@ main() {
     alert_count=${alert_count:-0}
 
     if (( alert_count > 0 )); then
-        printf "%b\n" "${YELLOW}Security Summary: $alert_count alerts generated${NC}"
-        printf "%b\n" "${YELLOW}Check: $ALERTS_DIR/$today.log${NC}"
+        printf "%b\n" "Security Summary: $alert_count alerts generated"
+        printf "%b\n" "Check: $ALERTS_DIR/$today.log"
     else
-        printf "%b\n" "${GREEN}Security Summary: No threats detected${NC}"
+        printf "%b\n" "Security Summary: No threats detected"
     fi
 }
 install_cron() {
@@ -2328,16 +2345,16 @@ case "${1:-run}" in
     printf "%s\n" "Testing Ghost Sentinel v4..."
     init_sentinel
     log_alert $HIGH "Test alert - Ghost Sentinel v4 is working"
-    printf "%b\n" "${GREEN}✓ Test completed successfully!${NC}"
-    printf "%b\n" "${CYAN}Advanced Capabilities:${NC}"
+    printf "%b\n" "✓ Test completed successfully!"
+    printf "%b\n" "Advanced Capabilities:"
     printf "%b\n" "  YARA: $HAS_YARA"
     printf "%b\n" "  eBPF: $HAS_BCC"
     printf "%b\n" "  jq: $HAS_JQ"
     printf "%b\n" "  inotify: $HAS_INOTIFY"
     printf "%b\n" "  netcat: $HAS_NETCAT"
-    printf "%b\n" "${CYAN}Environment: Container=$IS_CONTAINER, VM=$IS_VM${NC}"
-    printf "%b\n" "${CYAN}Logs: $LOG_DIR${NC}"
-    printf "%b\n" "${CYAN}JSON: $JSON_OUTPUT_FILE${NC}"
+    printf "%b\n" "Environment: Container=$IS_CONTAINER, VM=$IS_VM"
+    printf "%b\n" "Logs: $LOG_DIR"
+    printf "%b\n" "JSON: $JSON_OUTPUT_FILE"
     ;;
 "enhanced"|"v2"|"v3")
     acquire_lock
@@ -2350,23 +2367,23 @@ case "${1:-run}" in
 "integrity")
     load_config_safe
     validate_script_integrity
-    printf "%b\n" "${GREEN}Script integrity check completed${NC}"
+    printf "%b\n" "Script integrity check completed"
     ;;
 "reset-integrity")
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     declare script_hash_file="$LOG_DIR/.script_hash"
     declare current_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1)
     printf "%s\n" "$current_hash" > "$script_hash_file"
-    printf "%b\n" "${GREEN}Script integrity hash reset${NC}"
+    printf "%b\n" "Script integrity hash reset"
     printf "%s\n" "Current hash: $current_hash"
     ;;
 "fix-hostname")
     declare current_hostname=$(hostname)
     if ! grep -q "$current_hostname" /etc/hosts; then
         printf "%s\n" "127.0.0.1 $current_hostname" | sudo tee -a /etc/hosts >/dev/null
-        printf "%b\n" "${GREEN}Hostname resolution fixed${NC}"
+        printf "%b\n" "Hostname resolution fixed"
     else
-        printf "%b\n" "${GREEN}Hostname resolution already OK${NC}"
+        printf "%b\n" "Hostname resolution already OK"
     fi
     ;;
 "systemd")
@@ -2396,7 +2413,7 @@ case "${1:-run}" in
         printf "%s\n" "127.0.0.1 $current_hostname" | sudo tee -a /etc/hosts >/dev/null 2>&1 || true
         printf "%s\n" "✓ Fixed hostname resolution"
     fi
-    printf "%b\n" "${GREEN}✓ Cleanup completed - all issues resolved${NC}"
+    printf "%b\n" "✓ Cleanup completed - all issues resolved"
     printf "%s\n" "You can now run: sudo ./theProtectorV4.sh test"
     ;;
 "status")
@@ -2404,26 +2421,26 @@ case "${1:-run}" in
     printf "%s\n" "=========================="
     if [[ -f "$LOG_DIR/honeypot.pids" ]]; then
         declare honeypot_count=$(wc -l < "$LOG_DIR/honeypot.pids" 2>/dev/null || printf "0\n")
-        printf "%b\n" "${GREEN}Honeypots running: $honeypot_count${NC}"
+        printf "%b\n" "Honeypots running: $honeypot_count"
     else
-        printf "%b\n" "${RED}Honeypots not running${NC}"
+        printf "%b\n" "Honeypots not running"
     fi
     if [[ -f "$LOG_DIR/ebpf_monitor.pid" ]]; then
         declare ebpf_pid=$(cat "$LOG_DIR/ebpf_monitor.pid" 2>/dev/null || printf "")
         if [[ -n "$ebpf_pid" ]] && kill -0 "$ebpf_pid" 2>/dev/null; then
-            printf "%b\n" "${GREEN}eBPF Monitor running (PID: $ebpf_pid)${NC}"
+            printf "%b\n" "eBPF Monitor running (PID: $ebpf_pid)"
         else
-            printf "%b\n" "${RED}eBPF Monitor not running${NC}"
+            printf "%b\n" "eBPF Monitor not running"
         fi
     else
-        printf "%b\n" "${RED}eBPF Monitor not running${NC}"
+        printf "%b\n" "eBPF Monitor not running"
     fi
     declare today=$(date +%Y%m%d)
     if [[ -f "$ALERTS_DIR/$today.log" ]]; then
         declare alert_count=$(grep -c "^\[" "$ALERTS_DIR/$today.log" 2>/dev/null || printf "0\n")
-        printf "%b\n" "${YELLOW}Alerts today: $alert_count${NC}"
+        printf "%b\n" "Alerts today: $alert_count"
     else
-        printf "%b\n" "${GREEN}No alerts today${NC}"
+        printf "%b\n" "No alerts today"
     fi
     ;;
 "yara")
@@ -2455,15 +2472,15 @@ case "${1:-run}" in
     SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" >/dev/null 2>&1 && pwd -P)"
     GO_FILE="$SCRIPT_DIR/theProtector.go"
     if [[ ! -f "$GO_FILE" ]]; then
-        printf "%b\n" "${RED}✗ Dashboard file 'theProtector.go' not found in script directory: $SCRIPT_DIR${NC}"
+        printf "%b\n" "✗ Dashboard file 'theProtector.go' not found in script directory: $SCRIPT_DIR"
         printf "%s\n" "Please ensure theProtector.go is in the same directory as theProtectorV4.sh"
         exit 1
     fi
     if ! command -v go &> /dev/null; then
-        printf "%b\n" "${RED}✗ Go is not installed. Please install Go to run the dashboard.${NC}"
+        printf "%b\n" "✗ Go is not installed. Please install Go to run the dashboard."
         exit 1
     fi
-    printf "%b\n" "${GREEN}✓ Starting dashboard on http://localhost:8082${NC}"
+    printf "%b\n" "✓ Starting dashboard on http://localhost:8082"
     printf "%s\n" "Press Ctrl+C to stop the dashboard"
     printf "\n"
     go run "$GO_FILE"

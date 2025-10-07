@@ -1,383 +1,359 @@
-# theProtector v4 - Advanced Security Monitoring Suite
+# TheProtectorV4 - Advanced Linux Security Monitor
 
-Ghost Sentinel is a comprehensive, enterprise-grade security monitoring system designed for Linux environments. It combines traditional security monitoring with advanced threat detection capabilities including eBPF kernel monitoring, YARA malware scanning, dynamic honeypots, and forensic analysis.
-
-## Components
-
-### 1. Core Security Monitor (`theProtectorV4.sh`)
-A production-hardened bash script providing comprehensive security monitoring capabilities.
-
-### 2. Web Dashboard (`theProtector.go`)
-A Go-based web application providing real-time monitoring and control interface.
+TheProtectorV4 is a comprehensive, security monitoring system for Linux that provides real-time threat detection, malware scanning, and forensic analysis. It combines multiple security technologies including YARA malware detection, eBPF kernel monitoring, honeypots, and advanced threat intelligence.
 
 ## Features
 
 ### Core Security Monitoring
-- **Network Monitoring**: Advanced network traffic analysis with anti-evasion detection
-- **Process Monitoring**: Suspicious process detection and analysis
-- **File System Monitoring**: Real-time file integrity monitoring with YARA malware detection
-- **User Account Monitoring**: New user detection and privilege escalation monitoring
-- **Memory Analysis**: High memory usage detection and analysis
-- **Rootkit Detection**: Advanced rootkit and kernel malware detection
+- **YARA Malware Detection**: Advanced pattern-based malware scanning with enterprise rules
+- **eBPF Kernel Monitoring**: Real-time process, network, and file system monitoring  
+- **Honeypot System**: Dynamic port allocation honeypots to detect and analyze attacks
+- **Threat Intelligence**: Integration with threat intelligence feeds
+- **Forensic Analysis**: Comprehensive logging and evidence collection
 
-### Advanced Threat Detection
-- **eBPF Kernel Monitoring**: Deep kernel-level observability using eBPF/BCC tools
-- **YARA Malware Scanning**: Enterprise-grade malware detection with custom YARA rules
-- **Dynamic Honeypots**: Multi-protocol honeypot system with intelligence gathering
-- **Threat Intelligence**: Automated threat intelligence updates and correlation
-- **Anti-Evasion Detection**: Detection of common evasion techniques (LD_PRELOAD, etc.)
+### Advanced Capabilities
+- **Anti-Evasion Detection**: Identifies rootkit hiding techniques and process manipulation
+- **Network Monitoring**: Advanced network traffic analysis with private IP filtering
+- **Process Monitoring**: Real-time process behavior analysis
+- **File Integrity Monitoring**: Critical system file change detection
+- **User Activity Monitoring**: Login and user account anomaly detection
 
-### Enterprise Features
-- **Container Support**: Native support for Docker and containerized environments
-- **Forensic Analysis**: Comprehensive file quarantine with metadata preservation
-- **JSON API**: Structured output for integration with SIEM systems
-- **Systemd Integration**: Native systemd service support
-- **Performance Mode**: Optimized scanning for high-performance environments
+### Dashboard
+- **Web Interface**: Go-based dashboard for real-time monitoring and alerts
+- **RESTful API**: Programmatic access to security data
+- **Interactive Charts**: Visual representation of security metrics
+
+## Supported Linux Distributions
+
+TheProtectorV4 supports the following Linux distributions:
+- **Debian/Ubuntu** (primary support)
+- **Fedora/RHEL/CentOS** 
+- **Arch Linux** (with pacman)
+- **NixOS**
+- **General Linux** (with manual dependency installation)
+
+## System Requirements
+
+- **Architecture**: x86_64, ARM64
+- **Kernel**: Linux 4.15+ (for eBPF support)
+- **Memory**: 512MB minimum, 2GB recommended
+- **Storage**: 100MB for logs and quarantine
+- **Permissions**: Root access required for full functionality
+
+## Dependencies
+
+### Core Dependencies
+
+#### Package Manager Installation
+
+**Debian/Ubuntu:**
+```bash
+sudo apt update
+sudo apt install -y jq inotify-tools yara curl netcat-traditional python3 python3-pip
+```
+
+**Fedora/RHEL/CentOS:**
+```bash
+sudo dnf install -y jq inotify-tools yara curl nc python3 python3-pip
+# or for older systems:
+sudo yum install -y jq inotify-tools yara curl nc python3 python3-pip
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S jq inotify-tools yara curl netcat python python-pip
+```
+
+#### BCC/eBPF Tools
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install -y bpfcc-tools linux-headers-$(uname -r)
+```
+
+**Fedora:**
+```bash
+sudo dnf install -y bcc bcc-tools kernel-headers
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S bcc bcc-tools linux-headers
+```
+
+#### Manual Installation (if packages unavailable)
+
+**YARA:**
+```bash
+wget https://github.com/VirusTotal/yara/archive/v4.2.3.tar.gz
+tar -xzf v4.2.3.tar.gz
+cd yara-4.2.3
+./bootstrap.sh
+./configure
+make
+sudo make install
+```
+
+**BCC:**
+```bash
+git clone https://github.com/iovisor/bcc.git
+cd bcc
+git submodule update --init --recursive
+mkdir build && cd build
+cmake ..
+make
+sudo make install
+```
+
+### Go Dashboard Dependencies
+
+**Go Installation:**
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install -y golang-go
+```
+
+**Fedora:**
+```bash
+sudo dnf install -y golang
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S go
+```
+
+**Manual Installation:**
+```bash
+wget https://golang.org/dl/go1.21.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Python Dependencies
+
+The eBPF monitor requires Python 3 with the following modules:
+- `bcc` (installed with BCC)
+- `ipaddress` (built-in)
+- `json` (built-in) 
+- `threading` (built-in)
+- `socket` (built-in)
+- `struct` (built-in)
 
 ## Installation
 
-### Prerequisites
-- Linux operating system
-- Bash shell
-- Root privileges recommended for full functionality
-- Go 1.16+ (for dashboard)
-- Optional: YARA, BCC/eBPF tools, jq, inotify-tools
+1. **Clone or download the scripts:**
+   ```bash
+   # Ensure you have theProtectorV4.sh and theProtector.go in the same directory
+   ls -la
+   # Should show: theProtectorV4.sh theProtector.go
+   ```
 
-### Basic Installation
-```bash
-# Clone or download the scripts
-# Make executable
-chmod +x theProtectorV4.sh
+2. **Make the script executable:**
+   ```bash
+   chmod +x theProtectorV4.sh
+   ```
 
-# Run initial setup
-sudo ./theProtectorV4.sh install
-```
-
-### Advanced Installation with Dashboard
-```bash
-# Install Go if not present
-# Build dashboard
-go build -o theProtector theProtector.go
-
-# Start dashboard
-./theProtector &
-```
+3. **Run initial setup:**
+   ```bash
+   sudo ./theProtectorV4.sh test
+   ```
 
 ## Usage
 
-### Command Line Interface
+### Basic Security Scan
 
-#### Basic Scan
 ```bash
 sudo ./theProtectorV4.sh
 ```
 
-#### Enhanced Scan with All Features
+### Enhanced Security Scan (Recommended)
+
 ```bash
 sudo ./theProtectorV4.sh enhanced
 ```
 
-#### Specific Monitoring Modes
+This enables all features including eBPF monitoring and honeypots.
+
+### Continuous Monitoring
+
 ```bash
-# Performance optimized scan
-sudo ./theProtectorV4.sh performance
-
-# Test mode (safe for testing)
-sudo ./theProtectorV4.sh test
-
-# Baseline creation/update
-sudo ./theProtectorV4.sh baseline
+sudo ./theProtectorV4.sh loop
 ```
 
-#### Management Commands
+Runs continuous monitoring with randomized scan intervals (1-5 minutes). Background services (honeypots, eBPF monitoring) are started once at initialization and only refreshed if they become inactive, preventing resource accumulation.
+
+> **Note**: In loop mode, the script uses a locking mechanism to prevent multiple simultaneous scans. If you see "Waiting for previous scan to complete (PID: XXXX)", it means a previous instance of the script is still running its security scan. The current instance will wait for the previous scan to finish before starting a new one, ensuring comprehensive analysis without conflicts.
+
+### Dashboard
+
 ```bash
-# Install as system service
-sudo ./theProtectorV4.sh install
-
-# View logs
-sudo ./theProtectorV4.sh logs
-
-# View alerts
-sudo ./theProtectorV4.sh alerts
-
-# JSON output
-sudo ./theProtectorV4.sh json
-
-# Status check
-sudo ./theProtectorV4.sh status
-```
-
-#### Advanced Features
-```bash
-# Start eBPF monitoring
-sudo ./theProtectorV4.sh ebpf
-
-# Start honeypots
-sudo ./theProtectorV4.sh honeypot
-
-# YARA file scanning
-sudo ./theProtectorV4.sh yara
-
-# Update threat intelligence
-sudo ./theProtectorV4.sh update
-```
-
-#### Additional Commands
-```bash
-# Start web dashboard
 sudo ./theProtectorV4.sh dashboard
-
-# Cleanup and fix issues
-sudo ./theProtectorV4.sh cleanup
-
-# Check integrity
-sudo ./theProtectorV4.sh integrity
-
-# Reset integrity hash
-sudo ./theProtectorV4.sh reset-integrity
-
-# Fix hostname issues
-sudo ./theProtectorV4.sh fix-hostname
-
-# Create systemd service
-sudo ./theProtectorV4.sh systemd
-
-# Complete uninstall
-sudo ./theProtectorV4.sh uninstall
 ```
 
-### Web Dashboard
+Starts the Go-based web dashboard on http://localhost:8082
 
-#### Starting the Dashboard
+### Available Commands
+
+- `run` - Basic security scan
+- `enhanced` - Full security scan with all features
+- `test` - Test installation and capabilities
+- `baseline` - Create security baseline
+- `logs` - View security logs
+- `alerts` - View current alerts
+- `json` - Export data in JSON format
+- `status` - Show monitoring status
+- `dashboard` - Start web dashboard
+- `loop` - Continuous monitoring mode
+- `cleanup` - Clean up processes and fix issues
+- `reset-integrity` - Reset script integrity hash
+
+### Configuration
+
+The script uses environment variables for configuration. You can create a `sentinel.conf` file in the same directory:
+
 ```bash
-# Start the web interface (Go must be installed)
-sudo ./theProtectorV4.sh dashboard
-
-# Or run directly with Go
-go run theProtector.go
+# Example sentinel.conf
+MONITOR_NETWORK=true
+MONITOR_PROCESSES=true
+ENABLE_EBPF=true
+ENABLE_HONEYPOTS=true
+WEBHOOK_URL="https://your-webhook-url"
+SLACK_WEBHOOK_URL="https://hooks.slack.com/your-slack-webhook"
+EMAIL_RECIPIENT="admin@yourdomain.com"
 ```
 
-The dashboard will be available at `http://localhost:8082`
+## Directory Structure
 
-#### Dashboard Features
-- Real-time system statistics (CPU, Memory, Disk)
-- Security status overview with live indicators
-- Active alerts display with severity levels
-- Remote scan initiation capability
-- WebSocket-based live updates
-- Embedded HTML interface (no external file dependencies)
-
-## Configuration
-
-### Configuration File
-The system uses `sentinel.conf` for configuration. Edit with:
-```bash
-./theProtectorV4.sh config
+```
+/var/lib/ghost-sentinel/ (root) or ~/.ghost-sentinel/ (user)
+├── logs/
+│   ├── sentinel.log
+│   ├── alerts/
+│   ├── baseline/
+│   ├── quarantine/
+│   ├── ebpf_forensics.jsonl
+│   ├── honeypot_attacks.jsonl
+│   └── whitelisted_files.txt
+├── scripts/
+│   ├── ghost_sentinel_ebpf_monitor.py
+│   └── ghost_sentinel_honeypot.py
+└── backups/
 ```
 
-### Environment Variables
-- `LOG_DIR`: Log directory (auto-detected based on permissions)
-- `CONFIG_FILE`: Configuration file path
-- `JSON_OUTPUT_FILE`: JSON output file location
+## Security Features Explained
 
-## Output Formats
+### YARA Malware Detection
+Scans files for malware patterns using comprehensive rule sets including:
+- Enterprise malware indicators
+- Ransomware patterns
+- APT lateral movement detection
+- Webshell detection
+- Rootkit detection
 
-### Console Output
-Color-coded security summary with:
-- Scan duration
-- Module execution status
-- Alert counts by severity
-- Active features status
+### eBPF Kernel Monitoring
+Provides real-time visibility into:
+- Process execution and termination
+- Network connections
+- File system access
+- System call monitoring
 
-### JSON Output
-Structured JSON output available at:
-- User mode: `~/.ghost-sentinel/logs/latest_scan.json`
-- Root mode: `/var/log/ghost-sentinel/latest_scan.json`
+### Honeypot System
+Dynamic honeypots that:
+- Listen on random ports
+- Emulate common services (HTTP, SSH, FTP, Telnet, SMTP)
+- Log and analyze attack attempts
+- Generate intelligence reports
 
-Contains:
-- Scan metadata and timing
-- Security features status
-- Alert details with severity levels
-- System information and environment detection
-
-### Log Files
-- `sentinel.log`: General operation logs
-- `alerts/YYYYMMDD.log`: Daily security alerts
-- `ebpf_events.log`: eBPF monitoring events (if enabled)
-- `honeypot.log`: Honeypot activity logs (if enabled)
-- `quarantine/`: Quarantined files with forensic data
-
-## Security Features
-
-### Threat Detection
-- Malware pattern matching with YARA
-- Suspicious network connections
-- Privilege escalation attempts
-- Rootkit indicators
-- Memory-based attacks
-
-### Anti-Evasion
-- LD_PRELOAD detection
-- Process hiding detection
-- Network tool inconsistency checking
-- Kernel symbol analysis
-
-### Forensic Capabilities
-- File quarantine with metadata preservation
-- Hash calculation for integrity
-- String analysis
-- YARA signature matching
-
-## API Endpoints (Dashboard)
-
-### REST API
-- `GET /api/stats`: System statistics
-- `GET /api/security`: Security status
-- `POST /api/run-scan`: Initiate security scan
-
-### WebSocket
-- `/ws`: Real-time system statistics streaming
-
-## Integration
-
-### SIEM Integration
-JSON output can be integrated with SIEM systems like:
-- ELK Stack (Elasticsearch, Logstash, Kibana)
-- Splunk
-- IBM QRadar
-
-### Monitoring Systems
-- Prometheus metrics export (planned)
-- Grafana dashboards (planned)
+### Threat Intelligence
+Integrates with:
+- FireHOL IP blocklists
+- AbuseIPDB (optional)
+- VirusTotal (optional)
 
 ## Troubleshooting
 
 ### Common Issues
 
-#### Permission Errors
-```bash
-# Run with appropriate permissions
-sudo ./theProtectorV4.sh
+**eBPF monitoring fails:**
+- Ensure kernel version 4.15+
+- Install BCC tools correctly
+- Run as root
 
-# For user-level monitoring
-./theProtectorV4.sh
+**YARA not found:**
+- Install YARA from packages or compile manually
+- Ensure yara command is in PATH
+
+**Dashboard won't start:**
+- Ensure Go is installed and in PATH
+- Check that theProtector.go exists
+- Verify port 8082 is available
+
+**Loop mode background service management:**
+- Honeypots and eBPF monitoring are started once at initialization
+- Services are only restarted if they become inactive
+- Check service status with: `sudo ./theProtectorV4.sh status`
+- Clean up stuck processes with: `sudo ./theProtectorV4.sh cleanup`
+
+**Permission denied:**
+- Most features require root access
+- Use sudo for all commands
+
+### Logs and Debugging
+
+Enable verbose logging:
+```bash
+VERBOSE=true sudo ./theProtectorV4.sh enhanced
 ```
 
-#### Missing Dependencies
+Check logs:
 ```bash
-# Install recommended packages
-sudo apt-get install yara python3-bcc jq inotify-tools  # Debian/Ubuntu
-sudo dnf install yara bcc jq inotify-tools            # Fedora/RHEL
+sudo ./theProtectorV4.sh logs
 ```
 
-#### Dashboard Not Starting
+View alerts:
 ```bash
-# Check Go installation
-go version
-
-# Install Go if missing
-sudo apt-get install golang-go  # Debian/Ubuntu
-sudo dnf install golang         # Fedora/RHEL
-
-# Check if theProtector.go exists in same directory
-ls -la theProtector.go
-
-# Run dashboard command
-sudo ./theProtectorV4.sh dashboard
+sudo ./theProtectorV4.sh alerts
 ```
 
-#### eBPF Not Working
-- Requires kernel 4.4+
-- May need BCC tools installation
-- Check kernel configuration for eBPF support
+### Performance Tuning
 
-### Debug Mode
+For resource-constrained systems:
 ```bash
-# Enable verbose logging
-./theProtectorV4.sh --verbose enhanced
+PERFORMANCE_MODE=true sudo ./theProtectorV4.sh enhanced
 ```
-
-## Security Considerations
-
-### Running as Root
-- Recommended for full system visibility
-- Automatic privilege detection and adjustment
-- Secure directory permissions (700)
-
-### Network Security
-- Honeypots run on dynamic ports (if enabled)
-- No external network exposure by default
-- Dashboard binds to localhost only (127.0.0.1:8082)
-- Embedded HTML template prevents path traversal attacks
-
-### Data Protection
-- Sensitive logs encrypted where possible
-- Automatic log rotation
-- Secure quarantine directory permissions
 
 ## Contributing
 
-### Development Setup
-```bash
-# Fork and clone
-git clone https://github.com/your-repo/ghost-sentinel.git
-cd ghost-sentinel
+TheProtectorV4 is designed to be extensible. Key areas for contribution:
 
-# Make changes
-# Test thoroughly
-# Submit pull request
-```
-
-### Code Standards
-- Bash: Follow Google Shell Style Guide
-- Go: Standard Go formatting and conventions
-- Security: Input validation and secure coding practices
+- Additional YARA rules
+- New honeypot protocols
+- Enhanced threat intelligence sources
+- Dashboard features
+- Cross-platform support
 
 ## License
 
-This project is free and provided as-is for security research and monitoring purposes. Use responsibly and in compliance with applicable laws and regulations.
+This project is provided as-is for security research and system administration purposes. Use at your own risk.
 
 ## Disclaimer
 
-Ghost Sentinel is designed for security monitoring and research. Users are responsible for ensuring compliance with local laws and regulations regarding security monitoring and data collection.
+TheProtectorV4 is a security monitoring tool. While designed to enhance system security, it may produce false positives or impact system performance. Always test in a safe environment before production deployment.
+
+## Support
+
+For issues and questions:
+1. Check the logs: `sudo ./theProtectorV4.sh logs`
+2. Run diagnostics: `sudo ./theProtectorV4.sh test`
+3. Review configuration and dependencies
+4. Check system compatibility
 
 ## Version History
 
-### v4 (Current)
-- Enhanced eBPF monitoring capabilities
-- Dynamic honeypot system with multi-protocol support
-- Advanced YARA rules for enterprise threats
-- Embedded web dashboard with real-time monitoring
-- Improved threat intelligence integration
-- Enhanced forensic analysis and file quarantine
-- Better container and VM environment detection
-- Arithmetic validation fixes and stability improvements
-- Advanced anti-evasion detection
-- Comprehensive uninstall functionality
-- Enhanced systemd integration
-
-### v2.3 (Previous)
-- Enhanced eBPF monitoring capabilities
-- Dynamic honeypot system with multi-protocol support
-- Advanced YARA rules for enterprise threats
-- Embedded web dashboard with real-time monitoring
-- Improved threat intelligence integration
-- Enhanced forensic analysis and file quarantine
-- Better container and VM environment detection
-- Arithmetic validation fixes and stability improvements
-
-### v2.2
-- Container support
-- Performance optimizations
-- JSON API
-- Systemd integration
-
-### v2.1
-- YARA malware detection
-- Anti-evasion detection
-- Enhanced logging
-
-### v2.0
-- Complete rewrite with modular architecture
-- Advanced threat detection
-- Cross-platform compatibility improvements
+- **v4.0**: Complete rewrite with eBPF, honeypots, and Go dashboard
+- Enhanced threat detection and forensic capabilities
+- Improved performance and stability

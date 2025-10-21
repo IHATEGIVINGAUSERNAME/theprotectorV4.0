@@ -85,21 +85,27 @@ cleanup() {
     declare exit_code=$?
     stop_honeypots
     stop_ebpf_monitoring
-    rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+    if ! rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null; then
+        log_alert $MEDIUM "Warning: Failed to clean up lock files during exit"
+    fi
     exit $exit_code
 }
 trap cleanup EXIT INT TERM
 acquire_lock() {
     if [[ -f "$LOCK_FILE" ]]; then
         local lock_pid=""
-        if [[ -f "$PID_FILE" ]]; then
-            lock_pid=$(cat "$PID_FILE" 2>/dev/null || printf "\n")
+        # Use atomic read operation to prevent TOCTOU vulnerability
+        if [[ -f "$PID_FILE" ]] && [[ -r "$PID_FILE" ]]; then
+            lock_pid=$(<"$PID_FILE")
         fi
         if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
             printf "Another instance is running (PID: %s). Exiting.\n" "$lock_pid"
             exit 1
         else
-            rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+            if ! rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null; then
+                log_alert $HIGH "Failed to remove stale lock files for PID: $lock_pid"
+                exit 1
+            fi
         fi
     fi
     if cmd flock; then
@@ -167,8 +173,9 @@ detect_environment() {
 validate_script_integrity() {
     declare script_hash_file="$LOG_DIR/.script_hash"
     declare current_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1)
-    if [[ -f "$script_hash_file" ]]; then
-        declare stored_hash=$(cat "$script_hash_file" 2>/dev/null || printf "\n")
+    if [[ -f "$script_hash_file" ]] && [[ -r "$script_hash_file" ]]; then
+        # Use atomic read operation to prevent TOCTOU vulnerability
+        declare stored_hash=$(<"$script_hash_file")
         if [[ -n "$stored_hash" ]] && [[ "$current_hash" != "$stored_hash" ]]; then
             log_alert $CRITICAL "Script integrity check failed - possible tampering detected"
             printf "Expected: $stored_hash\n"
@@ -205,7 +212,8 @@ json_add_alert() {
     declare timestamp="$3"
 
     if [[ "$HAS_JQ" == true ]]; then
-        declare tmp_file=$(mktemp)
+        declare tmp_file=$(mktemp --tmpdir)
+        chmod 600 "$tmp_file"
         jq ".alerts += [{\"level\": $level, \"message\": \"$message\", \"timestamp\": \"$timestamp\"}]" "$JSON_OUTPUT_FILE" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$JSON_OUTPUT_FILE"
     else
         printf "%s\n" "{\"level\": $level, \"message\": \"$message\", \"timestamp\": \"$timestamp\"}" >> "$LOG_DIR/alerts.jsonl"
@@ -1485,7 +1493,6 @@ detect_anti_evasion() {
     if [[ -n "${LD_PRELOAD:-}" ]]; then
         log_alert $HIGH "LD_PRELOAD environment variable detected: $LD_PRELOAD"
     fi
-
     for pid in $(pgrep -f ".*" 2>/dev/null | head -20); do
         if [[ -r "/proc/$pid/environ" ]]; then
             declare environ_content=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null || printf "\n")
@@ -1706,6 +1713,7 @@ init_json_output() {
   }
 }
 EOF
+    chmod 600 "$JSON_OUTPUT_FILE" 2>/dev/null || true
 }
 
 #=====Configuration Management && Whitelisting=====#
@@ -1736,6 +1744,10 @@ load_config_safe() {
     if [[ -f "$CONFIG_FILE" ]]; then
         if source "$CONFIG_FILE" 2>/dev/null; then
             log_info "Configuration loaded from $CONFIG_FILE"
+            # Check for API keys in config file and warn about security
+            if grep -q "ABUSEIPDB_API_KEY=" "$CONFIG_FILE" 2>/dev/null || grep -q "VIRUSTOTAL_API_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+                log_alert $MEDIUM "SECURITY WARNING: API keys found in config file. Consider using environment variables instead: export ABUSEIPDB_API_KEY=your_key_here"
+            fi
         else
             log_info "Warning: Config file syntax error, using defaults"
         fi
@@ -1760,7 +1772,10 @@ log_alert() {
         
         if [[ ! -f "$alert_file.dedup" ]] || ! grep -q "$alert_hash" "$alert_file.dedup" 2>/dev/null; then
             printf "%s\n" "$log_entry" >> "$alert_file" 2>/dev/null || true
+            chmod 600 "$alert_file" || true
+            # Ensure dedup file has restrictive permissions
             printf "%s\n" "$alert_hash" >> "$alert_file.dedup" 2>/dev/null || true
+            chmod 600 "$alert_file.dedup" 2>/dev/null || true
             
             if [[ $(wc -l < "$alert_file.dedup" 2>/dev/null || printf "0") -gt 1000 ]]; then
                 tail -500 "$alert_file.dedup" > "$alert_file.dedup.tmp" && mv "$alert_file.dedup.tmp" "$alert_file.dedup"
@@ -1781,7 +1796,10 @@ log_info() {
 
     if [[ -n "$LOG_DIR" ]]; then
         mkdir -p "$LOG_DIR" 2>/dev/null || true
-        printf "%s\n" "[$timestamp] [INFO] $1" >> "$LOG_DIR/sentinel.log" 2>/dev/null || true
+        local log_file="$LOG_DIR/sentinel.log"
+        # Ensure log file has restrictive permissions
+        printf "%s\n" "[$timestamp] [INFO] $1" >> "$log_file" 2>/dev/null || true
+        chmod 600 "$log_file" 2>/dev/null || true
     fi
 }
 send_critical_alert() {
@@ -1795,7 +1813,7 @@ send_critical_alert() {
         fi
     fi
     if [[ -n "$WEBHOOK_URL" ]] && cmd curl; then
-        curl -s --max-time 10 -X POST "$WEBHOOK_URL" \
+        curl -s --max-time 10 --cacert /etc/ssl/certs/ca-certificates.crt -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{\"alert\":\"CRITICAL\",\"message\":\"$message\",\"timestamp\":\"$(date -Iseconds)\",\"hostname\":\"$(hostname)\"}" 2>/dev/null || true
     fi
@@ -1826,7 +1844,7 @@ send_critical_alert() {
 }
 EOF
 )
-        curl -s --max-time 10 -X POST "$SLACK_WEBHOOK_URL" \
+        curl -s --max-time 10 --cacert /etc/ssl/certs/ca-certificates.crt -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$payload" 2>/dev/null || true
     fi
@@ -1859,11 +1877,12 @@ update_threat_intelligence() {
         fi
     fi
     if [[ "$update_needed" == true ]]; then
-        local temp_file=$(mktemp)
+        local temp_file=$(mktemp --tmpdir)
+        chmod 600 "$temp_file"
         local sig_file="${temp_file}.sig"
         if cmd curl; then
-            if curl -s --max-time 30 -o "$temp_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" 2>/dev/null && \
-               curl -s --max-time 10 -o "$sig_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset.asc" 2>/dev/null; then
+            if curl -s --max-time 30 --cacert /etc/ssl/certs/ca-certificates.crt -o "$temp_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" 2>/dev/null && \
+               curl -s --max-time 10 --cacert /etc/ssl/certs/ca-certificates.crt -o "$sig_file" "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset.asc" 2>/dev/null; then
                 if [[ -s "$temp_file" ]] && [[ $(grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" "$temp_file" | wc -l) -gt 100 ]]; then
                     if verify_gpg_signature "$temp_file" "$sig_file" "8F87F3B1"; then
                         mv "$temp_file" "$intel_file"
@@ -1942,7 +1961,7 @@ is_malicious_ip() {
                 fi
             fi
         fi
-        declare response=$(curl -s --max-time 5 -G https://api.abuseipdb.com/api/v2/check \
+        declare response=$(curl -s --max-time 5 --cacert /etc/ssl/certs/ca-certificates.crt -G https://api.abuseipdb.com/api/v2/check \
             --data-urlencode "ipAddress=$addr" \
             -H "Key: $ABUSEIPDB_API_KEY" \
             -H "Accept: application/json" 2>/dev/null || printf "")
@@ -2490,25 +2509,27 @@ case "${1:-run}" in
     printf "%s\n" "Scans will run with randomized intervals (1-5 minutes). Press Ctrl+C to stop."
     printf "%s\n" "======================================================"
     while true; do
-        # Check if lock exists and if the process is actually running
         if [[ -f "$LOCK_FILE" ]]; then
             lock_pid=""
             if [[ -f "$PID_FILE" ]]; then
                 lock_pid=$(cat "$PID_FILE" 2>/dev/null || printf "\n")
             fi
             if [[ -n "$lock_pid" ]]; then
-                # Check if it's actually a scan process by looking at command line first
                 if ps -p "$lock_pid" -o cmd= 2>/dev/null | grep -q "theProtectorV4.sh"; then
                     printf "%s\n" "$(date): Waiting for previous scan to complete (PID: $lock_pid)..."
                     sleep 30
                     continue
                 else
                     printf "%s\n" "$(date): Stale lock detected (PID $lock_pid is not a scan process or doesn't exist), removing..."
-                    rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+                    if ! rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null; then
+                        printf "%s\n" "$(date): Warning: Failed to remove stale lock files"
+                    fi
                 fi
             else
                 printf "%s\n" "$(date): Empty PID file, removing lock files..."
-                rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null || true
+                if ! rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null; then
+                    printf "%s\n" "$(date): Warning: Failed to remove empty lock files"
+                fi
             fi
         fi
         

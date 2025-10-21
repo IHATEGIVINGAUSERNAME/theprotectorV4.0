@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ##=======Setting up environment=======##
-set -euo pipefail
+set -eu
 VERBOSE=false
 if [[ " $* " == *" --verbose "* ]]; then
     set -x

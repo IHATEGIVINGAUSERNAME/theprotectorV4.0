@@ -10,12 +10,14 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_NAME"
-LOCK_FILE="/tmp/ghost-sentinel-$USER.lock"
-PID_FILE="/tmp/ghost-sentinel-$USER.pid"
 if [[ $EUID -eq 0 ]]; then
     BASE_DIR="/var/lib/ghost-sentinel"
+    LOCK_FILE="/var/run/ghost-sentinel-$USER.lock"
+    PID_FILE="/var/run/ghost-sentinel-$USER.pid"
 else
     BASE_DIR="$HOME/.ghost-sentinel"
+    LOCK_FILE="$HOME/.ghost-sentinel-$USER.lock"
+    PID_FILE="$HOME/.ghost-sentinel-$USER.pid"
 fi
 LOG_DIR="$BASE_DIR/logs"
 BACKUP_DIR="$BASE_DIR/backups"
@@ -198,7 +200,8 @@ json_set() {
     declare key="$2"
     declare value="$3"
     if [[ "$HAS_JQ" == true ]]; then
-        declare tmp_file=$(mktemp)
+        declare tmp_file=$(mktemp -p "$LOG_DIR")
+        chmod 600 "$tmp_file"
         jq "$key = \"$value\"" "$file" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$file"
     else
         if grep -q "\"${key#.}\":" "$file" 2>/dev/null; then
@@ -212,7 +215,7 @@ json_add_alert() {
     declare timestamp="$3"
 
     if [[ "$HAS_JQ" == true ]]; then
-        declare tmp_file=$(mktemp --tmpdir)
+        declare tmp_file=$(mktemp -p "$LOG_DIR")
         chmod 600 "$tmp_file"
         jq ".alerts += [{\"level\": $level, \"message\": \"$message\", \"timestamp\": \"$timestamp\"}]" "$JSON_OUTPUT_FILE" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$JSON_OUTPUT_FILE"
     else
@@ -1877,7 +1880,7 @@ update_threat_intelligence() {
         fi
     fi
     if [[ "$update_needed" == true ]]; then
-        local temp_file=$(mktemp --tmpdir)
+        local temp_file=$(mktemp -p "$THREAT_INTEL_DIR")
         chmod 600 "$temp_file"
         local sig_file="${temp_file}.sig"
         if cmd curl; then
@@ -2421,7 +2424,6 @@ case "${1:-run}" in
     stop_ebpf_monitoring
     pkill -f "ghost_sentinel" 2>/dev/null || true
     pkill -f "ghost-sentinel" 2>/dev/null || true
-    rm -f /tmp/ghost_sentinel_* /tmp/ghost-sentinel*
     rm -f "$LOCK_FILE" "$PID_FILE"
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     declare script_hash_file="$LOG_DIR/.script_hash"
